@@ -239,6 +239,7 @@ export async function handle(input, options = {}) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
+    process.stdin.setEncoding('utf8');
     let raw = ''; for await (const chunk of process.stdin) raw += chunk;
     const output = await handle(JSON.parse(raw));
     if (output) process.stdout.write(JSON.stringify(output));
