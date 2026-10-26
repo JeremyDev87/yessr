@@ -176,6 +176,8 @@ export async function handle(input, options = {}) {
     }
     const turnKey = event === 'SessionStart' ? null : digest(input.turn_id);
     const receipt = { plugin: 'yessr', version: '0.1.0', event, sessionHash: digest(input.session_id), turnHash: turnKey, mode: 'unknown', code: 'skip', blockPrepared: false };
+    if (event === 'SessionStart') receipt.source = input.source;
+    if (event === 'Stop') receipt.stopHookActive = typeof input.stop_hook_active === 'boolean' ? input.stop_hook_active : null;
     let result = null;
     if (event === 'SessionStart') {
       for (const turn of Object.values(state.turns)) closeTurn(turn);
