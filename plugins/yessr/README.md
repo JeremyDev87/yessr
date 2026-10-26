@@ -1,6 +1,6 @@
 # Yessr! 0.1.0
 
-현재 요청의 요약과 정확 출력 예외를 다루는 **실험용 로컬 Codex 플러그인 후보**입니다. 실제 Desktop/CLI 설치·활성화·후크 신뢰·모델 응답 연결은 검증하지 않았습니다. CLI `0.164.0-alpha.11.1`의 존재를 확인한 것만으로 호환성을 보장하지 않습니다.
+현재 요청의 요약과 정확 출력 예외를 다루는 **실험용 로컬 Codex 플러그인 후보**입니다. 이전 portable manifest는 CLI `0.164.0-alpha.11.1`에서 설치·활성화되었지만 `/hooks`에서 후크가 발견되지 않았습니다. 현재 legacy manifest 수정본의 재설치·후크 신뢰·모델 응답 연결은 아직 검증하지 않았습니다.
 
 ## 동작과 범위
 
@@ -48,6 +48,8 @@
 
 ## 설치와 신뢰 검토
 
+패키지는 [.codex-plugin/plugin.json](.codex-plugin/plugin.json) 하나를 manifest로 사용합니다. 최상위 `hooks`는 플러그인 루트 기준 `./hooks/hooks.json`을 가리킵니다. CLI `0.164.0-alpha.11.1`에 대응하는 공식 소스는 [legacy manifest의 최상위 hooks를 읽고](https://github.com/openai/codex/blob/6905ecede7816e91373e9eabda3f6b0368fc747b/codex-rs/core-plugins/src/manifest.rs#L49-L73), [AgentPlugin 형식의 후크는 로드하지 않습니다](https://github.com/openai/codex/blob/6905ecede7816e91373e9eabda3f6b0368fc747b/codex-rs/core-plugins/src/loader.rs#L973-L983). 스키마를 선언한 루트 `plugin.json`은 [legacy 경로보다 먼저 선택되므로](https://github.com/openai/codex/blob/6905ecede7816e91373e9eabda3f6b0368fc747b/codex-rs/utils/plugins/src/plugin_namespace.rs#L43-L64) 함께 두지 않습니다. 이 소스 근거는 수정본의 실제 호스트 검증을 대체하지 않습니다.
+
 Node.js 24가 Codex 실행 환경의 `PATH`에 있어야 합니다. 필수 npm 의존성이나 빌드 단계는 없습니다. 아래는 설치자가 후보를 검토한 뒤 실행할 **정상 설치 절차**이며, 이미 실행하거나 검증했다는 뜻이 아닙니다.
 
 1. 저장소 루트에서 Node 버전을 확인하십시오: `node --version`.
@@ -55,6 +57,8 @@ Node.js 24가 Codex 실행 환경의 `PATH`에 있어야 합니다. 필수 npm �
 3. Codex Desktop의 Plugins Directory에서 `Yessr 로컬 검증`을 선택하고 `Yessr!`를 설치하십시오.
 4. 해당 프로젝트에서 플러그인을 활성화하십시오.
 5. 같은 환경의 CLI `/hooks`에서 Yessr의 현재 세 이벤트 정의와 명령을 검토하고 신뢰하십시오.
+
+이전 portable 후보가 이미 설치되어 있으면 Codex의 정상 제거·설치 절차로 수정본을 다시 설치하십시오. 같은 `0.1.0` 버전이므로 설치 목록의 버전 표시만으로 교체를 판단하지 마십시오. 설치 사본에 `.codex-plugin/plugin.json`이 있고 루트 `plugin.json`이 없는지 확인한 뒤 `/hooks`에서 세 이벤트를 검토하십시오.
 
 설치·활성화와 후크 신뢰는 별개입니다. 후크 정의가 바뀌면 다시 검토해야 합니다. 설치 사본의 경로·내용과 실제 이벤트 호출을 확인한 뒤에만 그 호스트에서 작동한다고 판단할 수 있습니다. 기존 공통 규칙의 전환은 별도 검토 대상이며 이 패키지는 전역 지침·설정·신뢰 정보를 수정하지 않습니다. lifecycle hook 플러그인은 공식 문서상 수동 Desktop 설치 대상이며 공개 플러그인 디렉터리 제출 대상이 아닙니다.
 

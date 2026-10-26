@@ -10,6 +10,26 @@ import { classify, violation, handle, digest } from '../plugins/yessr/hooks/resp
 const policyPath = resolve('plugins/yessr/policy.json');
 const handlerPath = resolve('plugins/yessr/hooks/response.mjs');
 const policy = JSON.parse(await readFile(policyPath, 'utf8'));
+test('패키지 연결은 단일 legacy manifest와 패키지 내부 후크 및 단일 Stop을 유지한다', async () => {
+  const catalog = JSON.parse(await readFile('.agents/plugins/marketplace.json', 'utf8'));
+  assert.equal(catalog.plugins.length, 1, '플러그인은 하나여야 합니다');
+  const entry = catalog.plugins[0];
+  assert.equal(entry.name, 'yessr');
+  assert.deepEqual(entry.source, { source: 'local', path: './plugins/yessr' });
+  const root = resolve(entry.source.path);
+  await assert.rejects(readFile(join(root, 'plugin.json')), { code: 'ENOENT' }, 'portable manifest가 함께 있으면 안 됩니다');
+  const manifest = JSON.parse(await readFile(join(root, '.codex-plugin/plugin.json'), 'utf8'));
+  assert.equal(manifest.name, 'yessr');
+  assert.equal(manifest.version, '0.1.0');
+  assert.equal(manifest.hooks, './hooks/hooks.json', '후크 경로는 패키지 내부 정의를 가리켜야 합니다');
+  const hooks = JSON.parse(await readFile(resolve(root, manifest.hooks), 'utf8')).hooks;
+  assert.deepEqual(Object.keys(hooks).sort(), ['SessionStart', 'Stop', 'UserPromptSubmit']);
+  for (const [event, groups] of Object.entries(hooks)) {
+    assert.equal(groups.length, 1, `${event} 그룹은 하나여야 합니다`);
+    assert.deepEqual(groups[0].hooks, [{ type: 'command', command: 'node "${PLUGIN_ROOT}/hooks/response.mjs"' }], `${event} 제어기는 하나여야 합니다`);
+  }
+  assert.equal((await stat(join(root, 'hooks/response.mjs'))).isFile(), true, '실행할 제어기가 있어야 합니다');
+});
 const examples = [
   ['캐시 정책을 설명해줘.', 'prose'], ['두 방식을 비교해줘.', 'prose'], ['Explain cache invalidation.', 'prose'],
   ['요청 요약은 생략하고 캐시를 설명해줘.', 'unknown'], ['복명복창 없이 캐시를 설명해줘.', 'unknown'], ['Explain caching with no recap.', 'unknown'],
