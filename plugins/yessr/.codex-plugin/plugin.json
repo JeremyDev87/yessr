@@ -5,7 +5,7 @@
   "hooks": "./hooks/hooks.json",
   "interface": {
     "displayName": "Yessr!",
-    "shortDescription": "요청 요약과 출력 형식의 보수적 검사 · 런타임 미검증",
+    "shortDescription": "요청 요약과 출력 형식의 보수적 검사 · 실험용",
     "category": "Productivity"
   }
 }

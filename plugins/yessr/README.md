@@ -1,6 +1,6 @@
 # Yessr! 0.1.0
 
-현재 요청의 요약과 정확 출력 예외를 다루는 **실험용 로컬 Codex 플러그인 후보**입니다. 이전 portable manifest는 CLI `0.164.0-alpha.11.1`에서 설치·활성화되었지만 `/hooks`에서 후크가 발견되지 않았습니다. 현재 legacy manifest 수정본의 재설치·후크 신뢰·모델 응답 연결은 아직 검증하지 않았습니다.
+현재 요청의 요약과 정확 출력 예외를 다루는 **실험용 로컬 Codex 플러그인**입니다. Node.js `24.15.0`과 CLI `0.164.0-alpha.11.1`에서 현재 legacy manifest의 정상 설치·신뢰와 실제 모델 응답 연결을 확인했습니다. Desktop 직접 입력·압축은 미검증이며, 수정 후에도 출력 형식이 틀릴 수 있습니다.
 
 ## 동작과 범위
 
@@ -10,7 +10,7 @@
 
 코드만 요구한 응답은 정책으로 안내하고 자동 수정을 요청하지 않습니다. 언어를 추측하거나 코드를 실행하지 않으며, 코드의 의미와 자연어 혼입을 판정하지 않습니다. 한국어 명료성과 요약 충실도도 정책 안내 대상입니다. 접두 통과가 의미 정확성이나 ASD-STE100 준수·인증을 뜻하지 않습니다.
 
-`Stop` 수정은 `YESSR_CORRECTION:` 이유를 가진 후속 응답 요청입니다. 이미 표시된 답변을 회수하지 않으며, 모든 메시지의 표시 전 차단 기능도 아닙니다. 제어기의 같은 턴에 대한 수정 요청 상한은 한 번입니다. 다른 플러그인의 요청 횟수까지 제한하지 않습니다. 실제 호스트의 턴 연결·재진입 동작은 별도 검증이 필요합니다.
+`Stop` 수정은 `YESSR_CORRECTION:` 이유를 가진 후속 응답 요청입니다. 이미 표시된 답변을 회수하지 않으며, 모든 메시지의 표시 전 차단 기능도 아닙니다. 제어기의 같은 턴에 대한 수정 요청 상한은 한 번입니다. 실제 CLI에서 같은 턴의 수정 후속 응답과 재진입을 확인했습니다. 다른 플러그인의 요청 횟수까지 제한하지 않습니다.
 
 ## 인식 예문
 
@@ -46,11 +46,21 @@
 
 호스트 식별자·상태 연결이 불확실하거나 입력·정책·상태 저장에 문제가 있으면 수정 요청을 생략합니다. `PLUGIN_DATA` 아래에 세션·턴 상태를 저장하므로 정상 실행에는 쓰기 권한이 필요합니다. 상태 삭제는 이전 제한을 안전하게 해제하는 방법이 아닙니다.
 
+호출 기록인 `receipts.jsonl`에는 세션·턴 식별자의 해시, 판별 결과, 수정 요청 준비 여부를 남깁니다. `SessionStart`에는 실제 입력의 `source`를 기록합니다. `Stop`에는 실제 입력의 `stop_hook_active`를 `stopHookActive` 키로 기록합니다. 호출 기록에는 요청·응답 본문을 남기지 않습니다. 별도 세션 상태에는 고정 문자열 비교에 필요한 기대값이 저장될 수 있습니다.
+
+## 실제 검증과 남은 한계
+
+- **정상 로딩:** 세 후크 `SessionStart`, `UserPromptSubmit`, `Stop`의 신뢰와 실제 호출을 확인했습니다. 이전 portable manifest는 설치 후에도 후크를 로드하지 못했습니다. 현재 단일 legacy manifest로 이 문제를 해결했습니다.
+- **형식과 수정:** 실제 CLI 형식 시나리오 8개의 최종 응답 중 7개가 통과했습니다. 요청 요약 누락과 개행 문자열 오류는 한 번의 수정 요청으로 복구되었습니다. `" OK "`는 뒤 공백이 빠진 `" OK"`로 남았습니다. 기대 바이트는 `20 4f 4b 20`, 실제 바이트는 `20 4f 4b`입니다. 위반 검출과 수정 상한을 확인한 결과이며, 최종 출력의 정확성을 보장하는 결과가 아닙니다.
+- **재개와 압축:** 명시 UUID 재개 후 지속 JSON 요청 유지, 명시적 형식 해제, 목표 변경, 실제 `/compact`, 압축 후 첫 진행 보고·최종 답변의 요청 요약을 확인했습니다. 후속 메타데이터 시험에서 `source=startup/resume/compact`와 같은 턴의 `stopHookActive=false→true`를 직접 확인했습니다. `compact`의 SessionStart 기록은 다음 사용자 턴에 관찰되었습니다.
+- **공존 한계:** 기존 전역 `CLAUDE.md`·`AGENTS.md` 규칙을 유지한 환경입니다. 응답 전체를 Yessr만의 효과로 귀속하지 않습니다. 다른 플러그인의 Stop은 활성 상태가 아니었으므로 Stop 간 동시 동작은 검증하지 않았습니다. 패키지 안의 정책 정본은 하나이며, 전역 규칙의 이전·삭제는 이번 범위에 포함하지 않습니다.
+- **Desktop 미검증:** 앱 도구의 위임 메시지는 일반 직접 입력과 달리 `UserPromptSubmit`을 거치지 않습니다. 이 결과를 Desktop 직접 입력 검증으로 사용하지 않습니다. 검증 도구 경로에서 네이티브 UI 접근 제한과 기존 writer의 연결 거부가 발생하여 직접 입력·압축·압축 후 응답 확인은 남아 있습니다. 이는 해당 검증 경로의 제한이며 Yessr의 Desktop 동작 실패를 입증하지 않습니다. Desktop에서 사람이 직접 수행하는 검증이 필요합니다.
+
 ## 설치와 신뢰 검토
 
-패키지는 [.codex-plugin/plugin.json](.codex-plugin/plugin.json) 하나를 manifest로 사용합니다. 최상위 `hooks`는 플러그인 루트 기준 `./hooks/hooks.json`을 가리킵니다. CLI `0.164.0-alpha.11.1`에 대응하는 공식 소스는 [legacy manifest의 최상위 hooks를 읽고](https://github.com/openai/codex/blob/6905ecede7816e91373e9eabda3f6b0368fc747b/codex-rs/core-plugins/src/manifest.rs#L49-L73), [AgentPlugin 형식의 후크는 로드하지 않습니다](https://github.com/openai/codex/blob/6905ecede7816e91373e9eabda3f6b0368fc747b/codex-rs/core-plugins/src/loader.rs#L973-L983). 스키마를 선언한 루트 `plugin.json`은 [legacy 경로보다 먼저 선택되므로](https://github.com/openai/codex/blob/6905ecede7816e91373e9eabda3f6b0368fc747b/codex-rs/utils/plugins/src/plugin_namespace.rs#L43-L64) 함께 두지 않습니다. 이 소스 근거는 수정본의 실제 호스트 검증을 대체하지 않습니다.
+패키지는 [.codex-plugin/plugin.json](.codex-plugin/plugin.json) 하나를 manifest로 사용합니다. 최상위 `hooks`는 플러그인 루트 기준 `./hooks/hooks.json`을 가리킵니다. CLI `0.164.0-alpha.11.1`에 대응하는 공식 소스는 [legacy manifest의 최상위 hooks를 읽고](https://github.com/openai/codex/blob/6905ecede7816e91373e9eabda3f6b0368fc747b/codex-rs/core-plugins/src/manifest.rs#L49-L73), [AgentPlugin 형식의 후크는 로드하지 않습니다](https://github.com/openai/codex/blob/6905ecede7816e91373e9eabda3f6b0368fc747b/codex-rs/core-plugins/src/loader.rs#L973-L983). 스키마를 선언한 루트 `plugin.json`은 [legacy 경로보다 먼저 선택되므로](https://github.com/openai/codex/blob/6905ecede7816e91373e9eabda3f6b0368fc747b/codex-rs/utils/plugins/src/plugin_namespace.rs#L43-L64) 함께 두지 않습니다. 이 호환성 설명과 실제 호출 검증은 위 CLI 버전을 기준으로 합니다.
 
-Node.js 24가 Codex 실행 환경의 `PATH`에 있어야 합니다. 필수 npm 의존성이나 빌드 단계는 없습니다. 아래는 설치자가 후보를 검토한 뒤 실행할 **정상 설치 절차**이며, 이미 실행하거나 검증했다는 뜻이 아닙니다.
+Node.js 24가 Codex 실행 환경의 `PATH`에 있어야 합니다. 필수 npm 의존성이나 빌드 단계는 없습니다. 다음 절차로 설치하고 해당 환경의 후크를 직접 검토하십시오.
 
 1. 저장소 루트에서 Node 버전을 확인하십시오: `node --version`.
 2. 저장소 루트에서 로컬 marketplace를 등록하십시오: `codex plugin marketplace add .`.
@@ -70,7 +80,7 @@ Node.js 24가 Codex 실행 환경의 `PATH`에 있어야 합니다. 필수 npm �
 node --test tests/yessr.test.mjs
 ```
 
-이 시험은 합성 입력을 사용하는 로컬 검증입니다. 실제 Codex 모델 출력, 압축·재개, 수정 후속 턴의 연결, 다른 플러그인과의 공존을 입증하지 않습니다.
+단위·프로세스 시험 104개가 통과했습니다. 이 명령은 합성 입력을 사용하므로 실제 모델 응답을 다시 검증하지는 않습니다. 별도 CLI 검증 범위와 실패 사례는 위에 기록했습니다. 다른 호스트 버전이나 운영체제의 호환성은 확인하지 않았습니다.
 
 [MIT](LICENSE)를 적용합니다. 선별 차용한 문구와 참조 범위는 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md), 해당 MIT 전문은 [licenses/](licenses/)에 있습니다.
 
