@@ -435,3 +435,57 @@ test('호스트의 기존 0755 데이터 루트를 보존하고 하위 상태만
   for (const path of [join(dataRoot, 'state'), join(dataRoot, 'state', digest(session_id))]) assert.equal((await stat(path)).mode & 0o777, 0o700);
   assert.equal((await stat(join(dataRoot, 'state', digest(session_id), 'session.json'))).mode & 0o777, 0o600);
 });
+
+test('레거시 v1 계약은 교정 사용 이력을 보존하며 닫고 같은 키로 재개하지 않는다', async t => {
+  const f = await fixture(t);
+  assert.equal((await f.state()).version, 2, '새 세션은 v2 상태를 생성해야 합니다');
+  const prompt = 'Explain caching in English only.';
+  const active = digest('턴-A'), consumed = digest('이미 교정'), literal = digest('손상 문자열');
+  const legacy = { version: 1, proseGuard: 'clear', ready: true, activeTurn: active, acknowledged: '', turns: {
+    [active]: { mode: 'prose', rule: 'prose_request', promptDigest: digest(prompt), ambiguous: false, closed: false, correctionConsumed: false },
+    [consumed]: { mode: 'json', rule: 'json_request', promptDigest: digest('JSON만 출력해줘.'), ambiguous: true, closed: true, correctionConsumed: true },
+    [literal]: { mode: 'literal', rule: 'literal_request', promptDigest: digest('정확히 "한"만 출력해줘.'), expected: '���', ambiguous: false, closed: false, correctionConsumed: true },
+  } };
+  await writeFile(join(f.dir, 'session.json'), JSON.stringify(legacy), { mode: 0o600 });
+  assert.equal(await processRun(f, f.event('Stop', { ...badStop, last_assistant_message: 'A cache stores results.' })), null, '구형 prose 계약으로 한국어 접두를 요구하면 안 됩니다');
+  let state = await f.state();
+  assert.equal(state.version, 2);
+  assert.equal(state.activeTurn, null);
+  assert.equal(state.proseGuard, 'unknown-history');
+  assert.equal(state.ready, legacy.ready);
+  assert.equal(state.acknowledged, legacy.acknowledged);
+  assert.deepEqual(state.turns, Object.fromEntries(Object.entries(legacy.turns).map(([key, { expected, ...turn }]) => [key, { ...turn, closed: true }])), '모든 턴과 교정 소비 여부를 보존하고 기대값만 제거해야 합니다');
+  for (const [turn_id, repeat] of [['턴-A', prompt], ['손상 문자열', '정확히 "한"만 출력해줘.']]) {
+    await f.run('UserPromptSubmit', { turn_id, prompt: repeat });
+    assert.equal(await f.run('Stop', { ...badStop, turn_id }), null, '같은 키를 다시 제출해도 닫힌 계약을 열면 안 됩니다');
+    assert.equal((await f.state()).turns[digest(turn_id)].closed, true);
+  }
+  await f.run('UserPromptSubmit', { turn_id: '새 문자열', prompt: '정확히 "한"만 출력해줘.' });
+  const correction = await processRun(f, f.event('Stop', { ...badStop, turn_id: '새 문자열' }));
+  assert.equal(correction.decision, 'block');
+  assert.equal(JSON.parse(correction.reason.slice('YESSR_CORRECTION: '.length)).required.literalData, '한');
+  await f.run('UserPromptSubmit', { turn_id: '새 설명', prompt: '캐시를 설명해줘.' });
+  state = await f.state();
+  assert.equal(state.proseGuard, 'unknown-history');
+  assert.equal(state.turns[digest('새 설명')].mode, 'unknown');
+  assert.equal(state.turns[consumed].correctionConsumed, true);
+  assert.equal(state.turns[literal].correctionConsumed, true);
+});
+
+test('비활성 literal의 후속 Stop은 거짓 위반을 기록하지 않으며 활성 교정 후속은 검사한다', async t => {
+  const f = await fixture(t);
+  await f.run('UserPromptSubmit', { prompt: '정확히 "OK"만 출력해줘.' });
+  assert.equal(await f.run('Stop', { ...badStop, last_assistant_message: 'OK' }), null);
+  assert.equal(await processRun(f, f.event('Stop', { stop_hook_active: true, last_assistant_message: 'OK' })), null);
+  let receipts = (await readFile(join(f.dir, 'receipts.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(receipts.at(-1).mode, 'unknown');
+  assert.equal(receipts.at(-1).code, 'inactive_contract');
+  assert.equal(receipts.at(-1).blockPrepared, false);
+  await f.run('UserPromptSubmit', { turn_id: '교정', prompt: '정확히 "OK"만 출력해줘.' });
+  assert.equal((await f.run('Stop', { ...badStop, turn_id: '교정' })).decision, 'block');
+  assert.equal(await f.run('Stop', { ...badStop, turn_id: '교정', stop_hook_active: true }), null);
+  receipts = (await readFile(join(f.dir, 'receipts.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(receipts.at(-1).mode, 'literal');
+  assert.equal(receipts.at(-1).code, 'literal_mismatch');
+  assert.equal(receipts.at(-1).blockPrepared, false);
+});
