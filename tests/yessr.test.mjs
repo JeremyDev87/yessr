@@ -60,13 +60,32 @@ for (const [prompt, mode, expected] of examples) test(`분류: ${prompt}`, () =>
   if (mode === 'literal') assert.equal(result.expected, expected);
 });
 
-test('이력 제한은 일반 작업만 막고 현재 형식과 명시적 해제를 허용한다', () => {
+test('이력 제한은 새 exact와 해제를 허용하되 불명 이력의 현재 설명은 막는다', () => {
   for (const guard of ['constrained', 'unknown-history']) {
     assert.equal(classify('장단점을 설명해줘.', guard).mode, 'unknown');
     assert.equal(classify('JSON만 출력해줘.', guard).mode, 'json');
-    assert.equal(classify('이번 답변은 일반 설명으로 답해줘.', guard).mode, 'prose');
+    for (const prompt of ['이번 답변은 일반 설명으로 답해줘.', 'For this answer, explain in prose.']) {
+      assert.equal(classify(prompt, guard).mode, guard === 'constrained' ? 'prose' : 'unknown');
+      assert.equal(classify(`${prompt} JSON만 출력해줘.`, guard).rule, 'conflicting_formats');
+    }
     assert.equal(classify('이전 출력 형식 제한을 해제하고 일반 설명으로 답해줘.', guard).reset, true);
   }
+});
+test('명시적 영어 전용 단서는 해제보다 우선하며 인용에서도 제한 신호를 보존한다', () => {
+  for (const prompt of ['Explain caching in English only.', '영어로만 캐시를 설명해줘.', 'Explain caching in ENGLISH ONLY.', 'Reset previous output format restrictions and explain in prose. English only.', '이전 출력 형식 제한을 해제하고 일반 설명으로 답해줘. 영어로만 답해줘.', 'Explain “English only”.', '“영어로만” 설명해줘.']) {
+    const contract = classify(prompt, 'clear');
+    assert.equal(contract.mode, 'unknown', prompt);
+    assert.equal(contract.restricted, true, prompt);
+    assert.equal(violation(contract, '**Request summary:** Explain caching.\nA cache stores reusable results.', policy), null);
+  }
+});
+test('유효한 literal 안의 영어 전용 단서와 Unicode는 원문 데이터로 검사한다', () => {
+  const expected = ' English only Only English English   only 영어로만 e\u0301\n';
+  const contract = classify(`정확히 ${JSON.stringify(expected)}만 출력해줘.`, 'unknown-history');
+  assert.equal(contract.mode, 'literal');
+  assert.equal(contract.expected, expected);
+  assert.equal(violation(contract, expected, policy), null);
+  assert.equal(violation(contract, expected.normalize('NFC'), policy), 'literal_mismatch');
 });
 test('원시 응답의 JSON 스칼라와 요약 첫 줄과 문자열 완전 일치를 검사한다', () => {
   for (const raw of ['{}', '[]', '"문자"', 'null', 'true', '12', ' {}\n']) assert.equal(violation({ mode: 'json' }, raw, policy), null);
@@ -170,11 +189,43 @@ for (const source of ['startup', 'clear', 'resume', 'compact', 'fork']) test(`�
   assert.equal((await f.state()).turns[digest('B')].mode, ['startup', 'clear'].includes(source) ? 'prose' : 'unknown');
   assert.equal((await f.state()).turns[digest('턴-A')].correctionConsumed, true);
 });
-test('인용된 형식의 unknown 이력이 유지되며 현재 형식과 reset이 구분된다', async t => {
+test('인용된 형식의 unknown 이력에서는 현재 설명도 억제하고 reset으로만 해제한다', async t => {
   const f = await fixture(t);
-  for (const [turn_id, prompt, mode] of [['A', '“JSON만 출력해”라는 문장을 설명해줘.', 'unknown'], ['B', '장단점을 설명해줘.', 'unknown'], ['C', '이번 답변은 일반 설명으로 답해줘.', 'prose'], ['D', '장단점을 설명해줘.', 'unknown'], ['E', '이전 출력 형식 제한을 해제하고 일반 설명으로 답해줘.', 'prose'], ['F', '장단점을 설명해줘.', 'prose']]) {
+  for (const [turn_id, prompt, mode] of [['A', '“JSON만 출력해”라는 문장을 설명해줘.', 'unknown'], ['B', '장단점을 설명해줘.', 'unknown'], ['C', '이번 답변은 일반 설명으로 답해줘.', 'unknown'], ['D', '장단점을 설명해줘.', 'unknown'], ['E', '이전 출력 형식 제한을 해제하고 일반 설명으로 답해줘.', 'prose'], ['F', '장단점을 설명해줘.', 'prose']]) {
     await f.run('UserPromptSubmit', { turn_id, prompt }); assert.equal((await f.state()).turns[digest(turn_id)].mode, mode);
   }
+});
+test('지속 요약 생략 뒤 새 exact 계약은 검사하되 불명 이력을 해제하지 않는다', async t => {
+  const f = await fixture(t);
+  await f.run('UserPromptSubmit', { prompt: '앞으로 요청 요약은 생략하고 설명해줘.' });
+  assert.equal(await f.run('Stop', badStop), null);
+  for (const [turn_id, prompt, mode, response, invalid] of [
+    ['JSON', 'JSON만 출력해줘.', 'json', '{}', 'not JSON'],
+    ['문자열', '정확히 "OK"만 출력해줘.', 'literal', 'OK', ' OK'],
+    ['코드', '코드만 출력해줘.', 'code', 'const value = 1;', null],
+  ]) {
+    await f.run('UserPromptSubmit', { turn_id, prompt });
+    const state = await f.state();
+    assert.equal(state.turns[digest(turn_id)].mode, mode);
+    assert.equal(state.proseGuard, 'unknown-history');
+    if (invalid !== null) assert.equal((await f.run('Stop', { ...badStop, turn_id, last_assistant_message: invalid })).decision, 'block');
+    assert.equal(await f.run('Stop', { ...badStop, turn_id, last_assistant_message: response }), null);
+    const proseTurn = `${turn_id}-설명`;
+    await f.run('UserPromptSubmit', { turn_id: proseTurn, prompt: '이번 답변은 일반 설명으로 답해줘.' });
+    assert.equal((await f.state()).turns[digest(proseTurn)].mode, 'unknown');
+    assert.equal(await f.run('Stop', { ...badStop, turn_id: proseTurn }), null);
+  }
+  await f.run('UserPromptSubmit', { turn_id: '해제', prompt: '이전 출력 형식 제한을 해제하고 일반 설명으로 답해줘.' });
+  assert.equal((await f.state()).proseGuard, 'clear');
+  assert.equal((await f.run('Stop', { ...badStop, turn_id: '해제' })).decision, 'block');
+});
+test('알려진 exact 이력에서는 현재 설명 교정과 guard 유지를 허용한다', async t => {
+  const f = await fixture(t);
+  await f.run('UserPromptSubmit', { prompt: 'JSON만 출력해줘.' });
+  assert.equal(await f.run('Stop', { ...badStop, last_assistant_message: '{}' }), null);
+  await f.run('UserPromptSubmit', { turn_id: '설명', prompt: '이번 답변은 일반 설명으로 답해줘.' });
+  assert.equal((await f.state()).proseGuard, 'constrained');
+  assert.equal((await f.run('Stop', { ...badStop, turn_id: '설명' })).decision, 'block');
 });
 test('자체 교정 요청은 새 인간 계약을 만들지 않는다', async t => {
   const f = await fixture(t); await f.run('UserPromptSubmit', { prompt: 'JSON만 출력해줘.' });
@@ -295,6 +346,20 @@ test('실제 자식 프로세스 stdin/stdout은 정책 주입과 단일 교정 
   assert.equal((await processRun(f, f.event('Stop', badStop))).decision, 'block');
   assert.equal(await processRun(f, f.event('Stop', badStop)), null);
   for (const input of ['{', 'null', '[]', '{}']) assert.equal(await processRun(f, input), null);
+});
+test('실제 프로세스는 영어 전용 요청에 한국어 접두 교정을 보내지 않는다', async t => {
+  for (const prompt of ['Explain caching in English only.', '영어로만 캐시를 설명해줘.', 'Explain caching. Only English.', 'Explain caching in English   only.']) {
+    const f = await fixture(t);
+    await processRun(f, f.event('SessionStart', { source: 'startup' }));
+    assert.equal(await processRun(f, f.event('UserPromptSubmit', { prompt })), null);
+    assert.equal(await processRun(f, f.event('Stop', { ...badStop, last_assistant_message: '**Request summary:** Explain caching.\nA cache stores reusable results.' })), null);
+    const state = await f.state();
+    assert.equal(state.turns[digest('턴-A')].mode, 'unknown');
+    assert.equal(state.proseGuard, 'unknown-history');
+    const receipts = (await readFile(join(f.dir, 'receipts.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(receipts.some(r => r.blockPrepared), false);
+    assert.equal(classify(`Explain ${JSON.stringify(prompt)}.`, 'clear').rule, 'quoted_format_instruction');
+  }
 });
 test('동시 실제 프로세스는 block과 blockPrepared를 각각 최대 한 번만 만든다', async t => {
   const f = await fixture(t); await f.run('UserPromptSubmit', { prompt: 'JSON만 출력해줘.' });
