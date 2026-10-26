@@ -1,0 +1,20 @@
+{
+  "name": "yessr-local",
+  "interface": {
+    "displayName": "Yessr 로컬 검증"
+  },
+  "plugins": [
+    {
+      "name": "yessr",
+      "source": {
+        "source": "local",
+        "path": "./plugins/yessr"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
