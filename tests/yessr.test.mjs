@@ -89,6 +89,32 @@ async function fixture(t) {
   return { dataRoot, options, event, run, dir, state };
 }
 const badStop = { stop_hook_active: false, last_assistant_message: '잘못된 결과' };
+test('영수증은 검증된 세션 시작 출처만 그대로 기록한다', async t => {
+  const f = await fixture(t);
+  const sources = ['startup', 'clear', 'resume', 'compact', 'fork'];
+  for (const source of sources.slice(1)) await f.run('SessionStart', { source, stop_hook_active: true });
+  assert.equal(await f.run('SessionStart', { source: '민감한 잘못된 출처' }), null);
+  const receipts = (await readFile(join(f.dir, 'receipts.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.deepEqual(receipts.map(r => r.source), sources, '허용된 출처를 정확히 기록하고 잘못된 출처는 기록하지 않아야 합니다');
+  assert.equal(receipts.every(r => r.event === 'SessionStart' && !Object.hasOwn(r, 'stopHookActive')), true);
+});
+test('영수증은 Stop 플래그의 참 거짓 누락을 구별하고 원문을 저장하지 않는다', async t => {
+  const f = await fixture(t);
+  const flags = [false, true, undefined, null, 0, 'false', '민감한 플래그', {}];
+  const prompt = '정확히 "민감한 기대값"만 출력해줘.';
+  for (const [index, flag] of flags.entries()) {
+    const turn_id = `관측-${index}`;
+    await f.run('UserPromptSubmit', { turn_id, prompt, source: '민감한 출처', stop_hook_active: true });
+    await f.run('Stop', { turn_id, last_assistant_message: '민감한 응답', source: '민감한 출처', ...(flag === undefined ? {} : { stop_hook_active: flag }) });
+  }
+  const raw = await readFile(join(f.dir, 'receipts.jsonl'), 'utf8');
+  const receipts = raw.trim().split('\n').map(JSON.parse);
+  const stops = receipts.filter(r => r.event === 'Stop');
+  assert.deepEqual(stops.map(r => r.stopHookActive), [false, true, null, null, null, null, null, null], '불리언만 보존하고 누락되거나 잘못된 값은 null이어야 합니다');
+  assert.equal(stops.every(r => !Object.hasOwn(r, 'source')), true);
+  assert.equal(receipts.filter(r => r.event === 'UserPromptSubmit').every(r => !Object.hasOwn(r, 'source') && !Object.hasOwn(r, 'stopHookActive')), true);
+  for (const value of [prompt, '민감한 기대값', '민감한 응답', '민감한 출처', '민감한 플래그']) assert.equal(raw.includes(value), false, '영수증에 원문을 저장하면 안 됩니다');
+});
 test('같은 턴의 false 재전달과 true 후속은 최대 한 번만 차단한다', async t => {
   const f = await fixture(t);
   await f.run('UserPromptSubmit', { prompt: 'JSON만 출력해줘.' });
