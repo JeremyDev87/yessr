@@ -137,7 +137,7 @@ async function marker(dir) {
   catch (error) { if (error.code === 'ENOENT') return ''; throw error; }
 }
 function validState(state) {
-  return state?.version === 1 && ['clear', 'constrained', 'unknown-history'].includes(state.proseGuard)
+  return [1, 2].includes(state?.version) && ['clear', 'constrained', 'unknown-history'].includes(state.proseGuard)
     && typeof state.ready === 'boolean' && typeof state.acknowledged === 'string'
     && (state.activeTurn === null || /^[a-f0-9]{64}$/.test(state.activeTurn))
     && state.turns && typeof state.turns === 'object' && !Array.isArray(state.turns)
@@ -174,8 +174,14 @@ export async function handle(input, options = {}) {
     try { state = JSON.parse(await readPrivate(join(dir, 'session.json'))); if (!validState(state)) throw new Error('invalid_state'); }
     catch (error) {
       if (event === 'Stop') return null;
-      state = { version: 1, proseGuard: 'unknown-history', ready: false, activeTurn: null, acknowledged: observedMarker, turns: {} };
+      state = { version: 2, proseGuard: 'unknown-history', ready: false, activeTurn: null, acknowledged: observedMarker, turns: {} };
       if (error.code !== 'ENOENT' || !newSession) await atomicWrite(join(dir, 'uncertainty'), randomUUID());
+    }
+    if (state.version === 1) {
+      for (const turn of Object.values(state.turns)) closeTurn(turn);
+      state.activeTurn = null;
+      state.proseGuard = 'unknown-history';
+      state.version = 2;
     }
     const turnKey = event === 'SessionStart' ? null : digest(input.turn_id);
     const receipt = { plugin: 'yessr', version: '0.1.0', event, sessionHash: digest(input.session_id), turnHash: turnKey, mode: 'unknown', code: 'skip', blockPrepared: false };
@@ -210,10 +216,11 @@ export async function handle(input, options = {}) {
       }
     } else {
       const turn = state.turns[turnKey];
-      const issue = turn ? violation(turn, input.last_assistant_message, policy) : null;
-      receipt.mode = turn?.mode ?? 'unknown';
-      receipt.code = issue ?? 'no_violation';
-      if (turn && state.activeTurn === turnKey && !turn.closed && !turn.ambiguous) {
+      const eligible = turn && state.activeTurn === turnKey && !turn.closed && !turn.ambiguous;
+      const issue = eligible ? violation(turn, input.last_assistant_message, policy) : null;
+      receipt.mode = eligible ? turn.mode : 'unknown';
+      receipt.code = eligible ? issue ?? 'no_violation' : 'inactive_contract';
+      if (eligible) {
         if (issue && input.stop_hook_active === false && !turn.correctionConsumed && state.ready && observedMarker === state.acknowledged) {
           turn.correctionConsumed = true;
           receipt.blockPrepared = true;
