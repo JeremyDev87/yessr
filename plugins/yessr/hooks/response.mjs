@@ -11,6 +11,7 @@ const boundary = '(?=$|[\\s.!?])';
 const lexeme = '"(?:[^"\\\\\\r\\n]|\\\\["\\\\/bfnrt]|\\\\u[0-9A-Fa-f]{4})*"';
 const formatHint = /JSON|코드만|code only|only code|정확히|exactly|고정 문자열|literal|원문 그대로|verbatim|만\s*(?:출력|답)|only (?:output|return)|nothing else|CSV|TSV|YAML|YML|XML|HTML|표만|테이블만|Markdown만/i;
 const omission = /요청 요약은 생략|요약을 생략|복명복창 없이|요청 요약을 붙이지|접두 없이|omit the recap|skip the recap|no recap|without a recap/i;
+const languageHint = /영어로만|\b(?:English\s+only|only\s+English)\b/i;
 const rejected = /하지 마|하지 말|하지 않|말고|금지|만약|조건|아니면|그렇지 않으면|[가-힣]+(?:라면|다면|으면)(?=\s|[,.:!?]|$)|\b(?:do not|don't|must not|if|unless|otherwise)\b|예시:|인용:|원문:|로그:|라는 문장|라고 지시/i;
 
 function maskedPrompt(prompt) {
@@ -27,7 +28,7 @@ function maskedPrompt(prompt) {
   const payloads = [];
   const mask = (start, end, payload = false) => {
     const text = prompt.slice(start, end);
-    if (!payload && (formatHint.test(text) || omission.test(text))) quoted = true;
+    if (!payload && (formatHint.test(text) || omission.test(text) || languageHint.test(text))) quoted = true;
     for (let j = start; j < end; j++) if (chars[j] !== '\n') chars[j] = ' ';
   };
   for (let i = 0; i < prompt.length;) {
@@ -72,11 +73,12 @@ function maskedPrompt(prompt) {
 export function classify(prompt, proseGuard = 'unknown-history') {
   if (typeof prompt !== 'string') return { mode: 'unknown', rule: 'invalid_prompt', restricted: false };
   const { view, payloads, quoted, ambiguous } = maskedPrompt(prompt);
-  const restricted = formatHint.test(prompt) || omission.test(prompt);
+  const restricted = formatHint.test(prompt) || omission.test(prompt) || languageHint.test(prompt);
   const unknown = rule => ({ mode: 'unknown', rule, restricted });
   if (ambiguous) return unknown('ambiguous_delimiter');
   if (quoted) return unknown('quoted_format_instruction');
   if (omission.test(view)) return unknown('recap_omission');
+  if (languageHint.test(view)) return unknown('language_constraint');
   if (rejected.test(view)) return unknown('negation_condition_example');
   if (payloads.length && /또는|\bor\b/i.test(view)) return unknown('alternative_literals');
   if (/CSV|TSV|YAML|YML|XML|HTML|표만|테이블만|Markdown만/i.test(view)) return unknown('unsupported_format');
@@ -88,6 +90,7 @@ export function classify(prompt, proseGuard = 'unknown-history') {
   if (reset || currentProse) candidates.push({ mode: 'prose', rule: reset ? 'reset' : 'current_prose', reset });
   const unique = new Set(candidates.map(c => JSON.stringify([c.mode, c.expected])));
   if (unique.size > 1) return unknown('conflicting_formats');
+  if (currentProse && !reset && proseGuard === 'unknown-history') return unknown('history_guard');
   if (candidates.length) return { ...candidates[0], restricted };
   if (restricted) return unknown('format_without_contract');
   if (proseGuard !== 'clear') return unknown('history_guard');
@@ -201,7 +204,7 @@ export async function handle(input, options = {}) {
           state.turns[turnKey] = { ...contract, promptDigest, ambiguous: false, closed: false, correctionConsumed: false };
           if (contract.reset) { state.proseGuard = 'clear'; state.acknowledged = observedMarker; state.ready = true; }
           else if (contract.mode === 'unknown' && contract.restricted) state.proseGuard = 'unknown-history';
-          else if (['json', 'code', 'literal'].includes(contract.mode)) state.proseGuard = 'constrained';
+          else if (['json', 'code', 'literal'].includes(contract.mode) && state.proseGuard !== 'unknown-history') state.proseGuard = 'constrained';
         }
         receipt.mode = state.turns[turnKey].mode; receipt.code = state.turns[turnKey].rule;
       }
