@@ -1,0 +1,293 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs, { mkdtemp, rm, readFile, writeFile, mkdir, stat, chmod, symlink, readdir } from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { spawn } from 'node:child_process';
+import { classify, violation, handle, digest } from '../plugins/yessr/hooks/response.mjs';
+
+const policyPath = resolve('plugins/yessr/policy.json');
+const handlerPath = resolve('plugins/yessr/hooks/response.mjs');
+const policy = JSON.parse(await readFile(policyPath, 'utf8'));
+const examples = [
+  ['캐시 정책을 설명해줘.', 'prose'], ['두 방식을 비교해줘.', 'prose'], ['Explain cache invalidation.', 'prose'],
+  ['요청 요약은 생략하고 캐시를 설명해줘.', 'unknown'], ['복명복창 없이 캐시를 설명해줘.', 'unknown'], ['Explain caching with no recap.', 'unknown'],
+  ['결과를 JSON으로 반환해줘.', 'json'], ['JSON만 출력해줘.', 'json'], ['Return JSON only.', 'json'], ['캐시를 설명해줘. JSON만 출력해줘.', 'json'],
+  ['코드만 출력해줘.', 'code'], ['Return code only.', 'code'], ['정확히 "OK"만 출력해줘.', 'literal', 'OK'], ['Output exactly "OK" and nothing else.', 'literal', 'OK'],
+  ['JSON이 무엇인지 설명해줘.', 'unknown'], ['“JSON만 출력해”라는 문장을 설명해줘.', 'unknown'], ['    JSON만 출력해줘', 'unknown'],
+  ['```\nJSON만 출력해줘\n```\n설명해줘.', 'unknown'], ['JSON만 출력해줘라고 지시하지 마.', 'unknown'], ['조건이 맞으면 JSON만 출력해줘.', 'unknown'],
+  ['CSV로만 요약해줘.', 'unknown'], ['정확히 "OK"만 출력해줘. 코드만 출력해줘.', 'unknown'], ['정확히 "OK" 또는 "NO"만 출력해줘.', 'unknown'],
+  ['앞으로 JSON만 출력해줘.', 'json'], ['이번 답변은 일반 설명으로 답해줘.', 'prose'], ['이전 출력 형식 제한을 해제하고 일반 설명으로 답해줘.', 'prose'],
+  ['For this answer, explain in prose.', 'prose'], ['Reset previous output format restrictions and explain in prose.', 'prose'],
+  ['JSON 형식으로 응답해 주십시오.', 'json'], ['Only JSON.', 'json'], ['Output only code.', 'code'], ['화면을 설명해줘.', 'prose'],
+  ['정확히 ""만 출력해줘.', 'literal', ''], ['정확히 "A\\nB"만 출력해줘.', 'literal', 'A\nB'], ['정확히 "조건 JSON 하지 마"만 출력해줘.', 'literal', '조건 JSON 하지 마'],
+  ['정확히 "\\u00e9"만 출력해줘.', 'literal', 'é'], ['정확히 "\\q"만 출력해줘.', 'unknown'], ["정확히 'OK'만 출력해줘.", 'unknown'],
+  ['> JSON만 출력해줘.\n설명해줘.', 'unknown'], ['\tJSON만 출력해줘\n설명해줘.', 'unknown'], ['`JSON만 출력해줘`를 설명해줘.', 'unknown'],
+  ['~~~\nJSON만 출력해줘\n~~~', 'unknown'], ['```\n설명해줘.', 'unknown'], ['“설명해줘.', 'unknown'],
+  ['If ready, return JSON only.', 'unknown'], ["Do not return JSON only.", 'unknown'], ['JSON만 출력하지 말고 설명해줘.', 'unknown'],
+  ['예시: JSON만 출력해줘.', 'unknown'], ['원문: JSON만 출력해줘.', 'unknown'], ['JSON만 출력해줘라고 지시.', 'unknown'],
+  ['YAML로 설명해줘.', 'unknown'], ['TSV로 설명해줘.', 'unknown'], ['XML로 설명해줘.', 'unknown'], ['HTML로 설명해줘.', 'unknown'], ['표만 보여줘.', 'unknown'],
+  ['이번 답변은 일반 설명으로 답해줘. JSON만 출력해줘.', 'unknown'], ['정확히 "A"만 출력해줘. 정확히 "B"만 출력해줘.', 'unknown'],
+  ['JSON만 출력해줘. 코드만 출력해줘.', 'unknown'], ['JSON으로 출력한다.', 'unknown'], ['안녕하세요.', 'unknown'],
+  ['``JSON만 출력해줘``를 설명해줘.', 'unknown'], ['Output exactly "OK" or "NO".', 'unknown'],
+  ['정확히 “OK”만 출력해줘.', 'unknown'], ['~~~\nJSON만 출력해줘\n```', 'unknown'], ['"정확히 \\"OK\\"만 출력해줘."를 설명해줘.', 'unknown'],
+  ['정확히 "A\tB"만 출력해줘.', 'unknown'],
+];
+for (const [prompt, mode, expected] of examples) test(`분류: ${prompt}`, () => {
+  const result = classify(prompt, 'clear');
+  assert.equal(result.mode, mode);
+  if (mode === 'literal') assert.equal(result.expected, expected);
+});
+
+test('이력 제한은 일반 작업만 막고 현재 형식과 명시적 해제를 허용한다', () => {
+  for (const guard of ['constrained', 'unknown-history']) {
+    assert.equal(classify('장단점을 설명해줘.', guard).mode, 'unknown');
+    assert.equal(classify('JSON만 출력해줘.', guard).mode, 'json');
+    assert.equal(classify('이번 답변은 일반 설명으로 답해줘.', guard).mode, 'prose');
+    assert.equal(classify('이전 출력 형식 제한을 해제하고 일반 설명으로 답해줘.', guard).reset, true);
+  }
+});
+test('원시 응답의 JSON 스칼라와 요약 첫 줄과 문자열 완전 일치를 검사한다', () => {
+  for (const raw of ['{}', '[]', '"문자"', 'null', 'true', '12', ' {}\n']) assert.equal(violation({ mode: 'json' }, raw, policy), null);
+  for (const raw of ['', '```json\n{}\n```', '{} 뒤 설명', 'undefined']) assert.equal(violation({ mode: 'json' }, raw, policy), 'invalid_json');
+  assert.equal(violation({ mode: 'prose' }, '**요청 요약:** 캐시 설명\n본문', policy), null);
+  for (const raw of ['', ' **요청 요약:** 내용', '**요청 요약:** \n본문', '본문']) assert.equal(violation({ mode: 'prose' }, raw, policy), 'missing_recap');
+  for (const [expected, actual] of [['OK', ' OK'], ['OK', 'OK\n'], ['é', 'e\u0301'], ['A\nB', 'A\\nB']]) assert.equal(violation({ mode: 'literal', expected }, actual, policy), 'literal_mismatch');
+  assert.equal(violation({ mode: 'literal', expected: '' }, '', policy), null);
+  for (const mode of ['json', 'literal', 'prose', 'code', 'unknown']) assert.equal(violation({ mode }, null, policy), null);
+});
+async function fixture(t) {
+  const dataRoot = await mkdtemp(join(tmpdir(), 'yessr-test-'));
+  t.after(() => rm(dataRoot, { recursive: true, force: true }));
+  const options = { dataRoot, policyPath };
+  const event = (hook_event_name, extra = {}) => ({ hook_event_name, session_id: '세션/../하나', turn_id: '턴-A', ...extra });
+  const run = (name, extra) => handle(event(name, extra), options);
+  const dir = join(dataRoot, 'state', digest('세션/../하나'));
+  const state = async () => JSON.parse(await readFile(join(dir, 'session.json'), 'utf8'));
+  await run('SessionStart', { source: 'startup' });
+  return { dataRoot, options, event, run, dir, state };
+}
+const badStop = { stop_hook_active: false, last_assistant_message: '잘못된 결과' };
+test('같은 턴의 false 재전달과 true 후속은 최대 한 번만 차단한다', async t => {
+  const f = await fixture(t);
+  await f.run('UserPromptSubmit', { prompt: 'JSON만 출력해줘.' });
+  assert.equal((await f.run('Stop', badStop)).decision, 'block');
+  assert.equal(await f.run('Stop', badStop), null);
+  assert.equal(await f.run('Stop', { ...badStop, stop_hook_active: true }), null);
+  const state = await f.state();
+  assert.equal(state.turns[digest('턴-A')].correctionConsumed, true);
+  const receipts = (await readFile(join(f.dir, 'receipts.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(receipts.filter(r => r.blockPrepared).length, 1);
+  assert.equal(JSON.stringify(receipts).includes('잘못된 결과'), false);
+  assert.equal(JSON.stringify(state).includes('JSON만 출력해줘'), false);
+  assert.equal((await stat(f.dir)).mode & 0o777, 0o700);
+  assert.equal((await stat(join(f.dir, 'session.json'))).mode & 0o777, 0o600);
+});
+for (const flag of [true, undefined, null, 0, 'false']) test(`native 플래그 ${String(flag)}는 교정을 요청하지 않는다`, async t => {
+  const f = await fixture(t); await f.run('UserPromptSubmit', { prompt: 'JSON만 출력해줘.' });
+  assert.equal(await f.run('Stop', { ...badStop, stop_hook_active: flag }), null);
+});
+test('빈 응답은 검사하고 null 응답은 건너뛴다', async t => {
+  const f = await fixture(t); await f.run('UserPromptSubmit', { prompt: '정확히 ""만 출력해줘.' });
+  assert.equal(await f.run('Stop', { ...badStop, last_assistant_message: '' }), null);
+  assert.equal((await f.state()).turns[digest('턴-A')].closed, true);
+  assert.equal('expected' in (await f.state()).turns[digest('턴-A')], false);
+  await f.run('UserPromptSubmit', { turn_id: 'B', prompt: 'JSON만 출력해줘.' });
+  assert.equal(await f.run('Stop', { ...badStop, turn_id: 'B', last_assistant_message: null }), null);
+  await f.run('UserPromptSubmit', { turn_id: 'C', prompt: 'JSON만 출력해줘.' });
+  assert.equal((await f.run('Stop', { ...badStop, turn_id: 'C', last_assistant_message: '' })).decision, 'block');
+});
+test('같은 키의 A→B→A 충돌은 되돌아오지 않는다', async t => {
+  const f = await fixture(t);
+  for (const prompt of ['정확히 "A"만 출력해줘.', '정확히 "B"만 출력해줘.', '정확히 "A"만 출력해줘.']) await f.run('UserPromptSubmit', { prompt });
+  assert.equal(await f.run('Stop', badStop), null);
+  assert.equal((await f.state()).turns[digest('턴-A')].ambiguous, true);
+});
+test('새 턴은 옛 계약을 닫고 세션은 서로 격리된다', async t => {
+  const f = await fixture(t); await f.run('UserPromptSubmit', { prompt: '정확히 "비밀"만 출력해줘.' });
+  await f.run('SessionStart', { source: 'clear' });
+  await f.run('UserPromptSubmit', { turn_id: 'B', prompt: '캐시를 설명해줘.' });
+  assert.equal(await f.run('Stop', badStop), null);
+  assert.equal((await f.run('Stop', { ...badStop, turn_id: 'B' })).decision, 'block');
+  assert.equal(await f.run('Stop', { ...badStop, session_id: '다른 세션', turn_id: 'B' }), null);
+  assert.equal(JSON.stringify(await f.state()).includes('비밀'), false);
+});
+for (const source of ['startup', 'clear', 'resume', 'compact', 'fork']) test(`수명주기 ${source} 정책 주입과 이력 보호`, async t => {
+  const f = await fixture(t); await f.run('UserPromptSubmit', { prompt: 'JSON만 출력해줘.' });
+  await f.run('Stop', badStop);
+  const output = await f.run('SessionStart', { source });
+  assert.equal(output.hookSpecificOutput.hookEventName, 'SessionStart');
+  assert.ok(output.hookSpecificOutput.additionalContext.includes(policy.recapPrefix));
+  assert.ok(output.hookSpecificOutput.additionalContext.includes(policy.preservationInstructions[0]));
+  await f.run('UserPromptSubmit', { turn_id: 'B', prompt: '캐시를 설명해줘.' });
+  assert.equal((await f.state()).turns[digest('B')].mode, ['startup', 'clear'].includes(source) ? 'prose' : 'unknown');
+  assert.equal((await f.state()).turns[digest('턴-A')].correctionConsumed, true);
+});
+test('인용된 형식의 unknown 이력이 유지되며 현재 형식과 reset이 구분된다', async t => {
+  const f = await fixture(t);
+  for (const [turn_id, prompt, mode] of [['A', '“JSON만 출력해”라는 문장을 설명해줘.', 'unknown'], ['B', '장단점을 설명해줘.', 'unknown'], ['C', '이번 답변은 일반 설명으로 답해줘.', 'prose'], ['D', '장단점을 설명해줘.', 'unknown'], ['E', '이전 출력 형식 제한을 해제하고 일반 설명으로 답해줘.', 'prose'], ['F', '장단점을 설명해줘.', 'prose']]) {
+    await f.run('UserPromptSubmit', { turn_id, prompt }); assert.equal((await f.state()).turns[digest(turn_id)].mode, mode);
+  }
+});
+test('자체 교정 요청은 새 인간 계약을 만들지 않는다', async t => {
+  const f = await fixture(t); await f.run('UserPromptSubmit', { prompt: 'JSON만 출력해줘.' });
+  const block = await f.run('Stop', badStop);
+  assert.ok(block.reason.startsWith('YESSR_CORRECTION:'));
+  await f.run('UserPromptSubmit', { turn_id: 'synthetic', prompt: block.reason });
+  assert.equal((await f.state()).turns[digest('synthetic')], undefined);
+  assert.equal(await f.run('Stop', { ...badStop, turn_id: 'synthetic' }), null);
+});
+for (const damage of ['missing', 'corrupt', 'directory']) test(`상태 ${damage} 오류에서는 이전 계약을 사용하지 않는다`, async t => {
+  const f = await fixture(t); await f.run('UserPromptSubmit', { prompt: 'JSON만 출력해줘.' });
+  const path = join(f.dir, 'session.json'); await rm(path);
+  if (damage === 'corrupt') await writeFile(path, '{');
+  if (damage === 'directory') await mkdir(path);
+  assert.equal(await f.run('Stop', badStop), null);
+});
+test('소비 상태 저장 실패와 영수증 저장 실패에서는 stdout을 준비하지 않는다', async t => {
+  for (const target of ['session.json', 'receipts.jsonl']) {
+    const f = await fixture(t); await f.run('UserPromptSubmit', { prompt: 'JSON만 출력해줘.' });
+    await rm(join(f.dir, target)); await mkdir(join(f.dir, target));
+    assert.equal(await f.run('Stop', badStop), null);
+  }
+});
+test('디렉터리 쓰기 권한 실패가 나면 block하지 않는다', async t => {
+  const f = await fixture(t); await f.run('UserPromptSubmit', { prompt: 'JSON만 출력해줘.' });
+  await chmod(join(f.dir, 'session.json'), 0o400);
+  await chmod(f.dir, 0o500);
+  try { assert.equal(await f.run('Stop', badStop), null); }
+  finally { await chmod(f.dir, 0o700); }
+  assert.equal((await f.state()).turns[digest('턴-A')].correctionConsumed, false);
+});
+test('합성 파일시스템 오류 주입: 소비 상태 rename 실패는 교정과 임시 파일을 남기지 않는다', async t => {
+  const f = await fixture(t); await f.run('UserPromptSubmit', { prompt: '정확히 "민감 값"만 출력해줘.' });
+  const realRename = fs.rename;
+  let prepared;
+  t.mock.method(fs, 'rename', async (from, to) => {
+    if (to === join(f.dir, 'session.json')) {
+      prepared = JSON.parse(await readFile(from, 'utf8'));
+      throw Object.assign(new Error('합성 rename 실패'), { code: 'EIO' });
+    }
+    return realRename(from, to);
+  });
+  syncBuiltinESMExports();
+  try { assert.equal(await f.run('Stop', badStop), null); }
+  finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+  assert.equal(prepared.turns[digest('턴-A')].correctionConsumed, true);
+  assert.equal((await f.state()).turns[digest('턴-A')].correctionConsumed, false);
+  assert.equal((await readdir(f.dir)).some(name => name.endsWith('.tmp')), false);
+  const receipts = (await readFile(join(f.dir, 'receipts.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(receipts.some(r => r.blockPrepared), false);
+});
+test('교정 reason은 해당 형식 계약만 담고 일반 문체 지침을 추가하지 않는다', async t => {
+  const f = await fixture(t);
+  for (const [turn_id, prompt, required] of [
+    ['json', 'JSON만 출력해줘.', { parser: 'JSON.parse', input: 'entire raw response' }],
+    ['literal', '정확히 "비밀\\n문자"만 출력해줘.', { literalData: '비밀\n문자' }],
+    ['prose', '이번 답변은 일반 설명으로 답해줘.', { prefix: policy.recapPrefix, firstSummaryLine: 'nonempty' }],
+  ]) {
+    await f.run('UserPromptSubmit', { turn_id, prompt });
+    const block = await f.run('Stop', { ...badStop, turn_id });
+    const descriptor = JSON.parse(block.reason.slice('YESSR_CORRECTION: '.length));
+    assert.equal(descriptor.formatOnly, true); assert.equal(descriptor.preserveOriginalTask, true);
+    assert.deepEqual(descriptor.required, required);
+    for (const sentence of policy.clarityInstructions) assert.equal(block.reason.includes(sentence), false);
+  }
+  assert.equal((await readFile(join(f.dir, 'receipts.jsonl'), 'utf8')).includes('비밀'), false);
+});
+test('영수증 실패 후에도 저장된 소비 상태를 다시 열지 않는다', async t => {
+  const f = await fixture(t); await f.run('UserPromptSubmit', { prompt: '정확히 "비밀"만 출력해줘.' });
+  await rm(join(f.dir, 'receipts.jsonl')); await mkdir(join(f.dir, 'receipts.jsonl'));
+  assert.equal(await f.run('Stop', badStop), null);
+  assert.equal((await f.state()).turns[digest('턴-A')].correctionConsumed, true);
+  await rm(join(f.dir, 'receipts.jsonl'), { recursive: true });
+  assert.equal(await f.run('Stop', badStop), null);
+  await f.run('UserPromptSubmit', { prompt: '정확히 "비밀"만 출력해줘.' });
+  assert.equal(await f.run('Stop', badStop), null);
+});
+test('코드와 unknown은 자동 교정하지 않으며 닫힌 계약은 다시 열지 않는다', async t => {
+  const f = await fixture(t);
+  for (const [turn_id, prompt] of [['code', '코드만 출력해줘.'], ['unknown', 'JSON이 무엇인지 설명해줘.']]) {
+    await f.run('UserPromptSubmit', { turn_id, prompt });
+    assert.equal(await f.run('Stop', { ...badStop, turn_id }), null);
+    await f.run('UserPromptSubmit', { turn_id, prompt });
+    assert.equal((await f.state()).turns[digest(turn_id)].closed, true);
+  }
+});
+test('심볼릭 링크 상태와 marker 읽기 오류는 교정을 막는다', async t => {
+  const f = await fixture(t); await f.run('UserPromptSubmit', { prompt: 'JSON만 출력해줘.' });
+  const original = await readFile(join(f.dir, 'session.json'), 'utf8');
+  const outside = join(f.dataRoot, 'outside.json'); await writeFile(outside, original, { mode: 0o600 });
+  await rm(join(f.dir, 'session.json')); await symlink(outside, join(f.dir, 'session.json'));
+  assert.equal(await f.run('Stop', badStop), null);
+  await rm(join(f.dir, 'session.json')); await writeFile(join(f.dir, 'session.json'), original, { mode: 0o600 });
+  await mkdir(join(f.dir, 'uncertainty'));
+  assert.equal(await f.run('Stop', badStop), null);
+});
+test('lock 경합 표시와 reset 경합은 이후 Stop을 억제한다', async t => {
+  const f = await fixture(t); await f.run('UserPromptSubmit', { prompt: 'JSON만 출력해줘.' });
+  await mkdir(join(f.dir, 'lock'));
+  assert.equal(await f.run('UserPromptSubmit', { turn_id: 'reset', prompt: '이전 출력 형식 제한을 해제하고 일반 설명으로 답해줘.' }), null);
+  await rm(join(f.dir, 'lock'), { recursive: true });
+  assert.equal(await f.run('Stop', badStop), null);
+  await f.run('UserPromptSubmit', { turn_id: 'fresh', prompt: 'JSON만 출력해줘.' });
+  assert.equal(await f.run('Stop', { ...badStop, turn_id: 'fresh' }), null);
+});
+async function processRun(f, payload) {
+  const child = spawn(process.execPath, [handlerPath], { env: { ...process.env, PLUGIN_DATA: f.dataRoot }, stdio: ['pipe', 'pipe', 'pipe'] });
+  let stdout = '', stderr = ''; child.stdout.on('data', b => { stdout += b; }); child.stderr.on('data', b => { stderr += b; });
+  child.stdin.end(typeof payload === 'string' ? payload : JSON.stringify(payload));
+  const code = await new Promise((resolve, reject) => { child.on('error', reject); child.on('close', resolve); });
+  assert.equal(code, 0); assert.equal(stderr, '');
+  return stdout ? JSON.parse(stdout) : null;
+}
+test('실제 자식 프로세스 stdin/stdout은 정책 주입과 단일 교정 계약을 지킨다', async t => {
+  const f = await fixture(t);
+  assert.equal((await processRun(f, f.event('SessionStart', { source: 'startup' }))).hookSpecificOutput.hookEventName, 'SessionStart');
+  assert.equal(await processRun(f, f.event('UserPromptSubmit', { prompt: 'JSON만 출력해줘.' })), null);
+  assert.equal((await processRun(f, f.event('Stop', badStop))).decision, 'block');
+  assert.equal(await processRun(f, f.event('Stop', badStop)), null);
+  for (const input of ['{', 'null', '[]', '{}']) assert.equal(await processRun(f, input), null);
+});
+test('동시 실제 프로세스는 block과 blockPrepared를 각각 최대 한 번만 만든다', async t => {
+  const f = await fixture(t); await f.run('UserPromptSubmit', { prompt: 'JSON만 출력해줘.' });
+  const results = await Promise.all(Array.from({ length: 8 }, () => processRun(f, f.event('Stop', badStop))));
+  assert.ok(results.filter(r => r?.decision === 'block').length <= 1);
+  const receipts = (await readFile(join(f.dir, 'receipts.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.ok(receipts.filter(r => r.blockPrepared).length <= 1);
+});
+test('손상 정책과 잘못된 이벤트는 차단하지 않는다', async t => {
+  const f = await fixture(t); const broken = join(f.dataRoot, 'policy.json'); await writeFile(broken, '{}');
+  assert.equal(await handle(f.event('SessionStart', { source: 'startup' }), { ...f.options, policyPath: broken }), null);
+  for (const input of [null, [], {}, f.event('Stop', { session_id: '' }), f.event('UserPromptSubmit', { prompt: 42 }), f.event('SessionStart', { source: 'other' })]) assert.equal(await handle(input, f.options), null);
+});
+test('세션 파일이 사라진 뒤 startup도 이전 소비 계약을 복구하지 않는다', async t => {
+  const f = await fixture(t); await f.run('UserPromptSubmit', { prompt: 'JSON만 출력해줘.' });
+  assert.equal((await f.run('Stop', badStop)).decision, 'block');
+  await rm(join(f.dir, 'session.json'));
+  await f.run('SessionStart', { source: 'startup' });
+  await f.run('UserPromptSubmit', { prompt: 'JSON만 출력해줘.' });
+  assert.equal(await f.run('Stop', badStop), null);
+});
+test('첫 true 또는 잘못된 flag 뒤 false가 와도 닫힌 턴을 다시 교정하지 않는다', async t => {
+  const f = await fixture(t);
+  for (const [turn_id, flag] of [['true', true], ['missing', undefined], ['invalid', 'false']]) {
+    await f.run('UserPromptSubmit', { turn_id, prompt: 'JSON만 출력해줘.' });
+    assert.equal(await f.run('Stop', { ...badStop, turn_id, stop_hook_active: flag }), null);
+    assert.equal(await f.run('Stop', { ...badStop, turn_id }), null);
+  }
+});
+test('호스트의 기존 0755 데이터 루트를 보존하고 하위 상태만 사용자 전용으로 만든다', async t => {
+  const dataRoot = await mkdtemp(join(tmpdir(), 'yessr-host-root-'));
+  t.after(() => rm(dataRoot, { recursive: true, force: true }));
+  await chmod(dataRoot, 0o755);
+  const options = { dataRoot, policyPath }, session_id = '호스트 권한 시험', turn_id = '턴';
+  const output = await handle({ hook_event_name: 'SessionStart', source: 'startup', session_id }, options);
+  assert.equal(output.hookSpecificOutput.hookEventName, 'SessionStart');
+  await handle({ hook_event_name: 'UserPromptSubmit', session_id, turn_id, prompt: 'JSON만 출력해줘.' }, options);
+  assert.equal((await handle({ hook_event_name: 'Stop', session_id, turn_id, ...badStop }, options)).decision, 'block');
+  assert.equal((await stat(dataRoot)).mode & 0o777, 0o755);
+  for (const path of [join(dataRoot, 'state'), join(dataRoot, 'state', digest(session_id))]) assert.equal((await stat(path)).mode & 0o777, 0o700);
+  assert.equal((await stat(join(dataRoot, 'state', digest(session_id), 'session.json'))).mode & 0o777, 0o600);
+});
