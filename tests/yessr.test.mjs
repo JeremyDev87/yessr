@@ -331,14 +331,47 @@ test('lock 경합 표시와 reset 경합은 이후 Stop을 억제한다', async 
   await f.run('UserPromptSubmit', { turn_id: 'fresh', prompt: 'JSON만 출력해줘.' });
   assert.equal(await f.run('Stop', { ...badStop, turn_id: 'fresh' }), null);
 });
-async function processRun(f, payload) {
-  const child = spawn(process.execPath, [handlerPath], { env: { ...process.env, PLUGIN_DATA: f.dataRoot }, stdio: ['pipe', 'pipe', 'pipe'] });
-  let stdout = '', stderr = ''; child.stdout.on('data', b => { stdout += b; }); child.stderr.on('data', b => { stderr += b; });
-  child.stdin.end(typeof payload === 'string' ? payload : JSON.stringify(payload));
+async function processRun(f, payload, splitAt) {
+  const input = Buffer.from(typeof payload === 'string' ? payload : JSON.stringify(payload));
+  const observer = `
+    import { pathToFileURL } from 'node:url';
+    const iterate = process.stdin[Symbol.asyncIterator].bind(process.stdin);
+    process.stdin[Symbol.asyncIterator] = async function* () {
+      for await (const chunk of iterate()) { yield chunk; process.send('read'); }
+    };
+    await import(pathToFileURL(process.argv[1]).href);
+    process.disconnect();
+  `;
+  const child = spawn(process.execPath, splitAt === undefined ? [handlerPath] : ['--input-type=module', '-e', observer, handlerPath], {
+    env: { ...process.env, PLUGIN_DATA: f.dataRoot }, stdio: ['pipe', 'pipe', 'pipe', ...(splitAt === undefined ? [] : ['ipc'])], timeout: 10000,
+  });
+  let stdout = '', stderr = ''; child.stdout.setEncoding('utf8').on('data', b => { stdout += b; }); child.stderr.setEncoding('utf8').on('data', b => { stderr += b; });
+  if (splitAt === undefined) child.stdin.end(input);
+  else {
+    // 첫 청크를 실제로 소비한 뒤 나머지를 보내어 OS 파이프의 청크 병합을 막습니다.
+    child.once('message', () => child.stdin.end(input.subarray(splitAt)));
+    child.stdin.write(input.subarray(0, splitAt));
+  }
   const code = await new Promise((resolve, reject) => { child.on('error', reject); child.on('close', resolve); });
   assert.equal(code, 0); assert.equal(stderr, '');
   return stdout ? JSON.parse(stdout) : null;
 }
+test('실제 프로세스는 UTF-8 중간에서 나눈 요청의 원문 literal을 보존한다', async t => {
+  const f = await fixture(t);
+  const input = f.event('UserPromptSubmit', { prompt: '정확히 "한"만 출력해줘.' });
+  const splitAt = Buffer.from(JSON.stringify(input)).indexOf(Buffer.from('한')) + 1;
+  assert.equal(await processRun(f, input, splitAt), null);
+  const stored = (await f.state()).turns[digest('턴-A')].expected;
+  const stop = await processRun(f, f.event('Stop', { ...badStop, last_assistant_message: '한' }));
+  assert.deepEqual({ stored, stop }, { stored: '한', stop: null }, '원문을 보존하고 올바른 응답을 차단하지 않아야 합니다');
+});
+test('실제 프로세스는 UTF-8 중간에서 나눈 올바른 Stop 응답을 차단하지 않는다', async t => {
+  const f = await fixture(t);
+  await processRun(f, f.event('UserPromptSubmit', { prompt: '정확히 "한"만 출력해줘.' }));
+  const input = f.event('Stop', { ...badStop, last_assistant_message: '한' });
+  const splitAt = Buffer.from(JSON.stringify(input)).indexOf(Buffer.from('한')) + 1;
+  assert.equal(await processRun(f, input, splitAt), null, '청크 경계가 올바른 응답을 바꾸면 안 됩니다');
+});
 test('실제 자식 프로세스 stdin/stdout은 정책 주입과 단일 교정 계약을 지킨다', async t => {
   const f = await fixture(t);
   assert.equal((await processRun(f, f.event('SessionStart', { source: 'startup' }))).hookSpecificOutput.hookEventName, 'SessionStart');
