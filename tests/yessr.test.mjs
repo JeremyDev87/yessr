@@ -190,6 +190,26 @@ test('JSON 앞 일반 과업과 literal 안의 코드 펜스 문구는 유지한
     assert.equal(contract.expected, expected, 'literal 원문을 보존해야 합니다');
   }
 });
+test('출력 추가와 포장 조건은 JSON literal 일반 설명에 공통으로 적용한다', () => {
+  for (const prompt of ['Include a short explanation before the JSON. Return JSON.', '먼저 짧은 설명을 붙이고 JSON으로 반환해줘.', 'Put a heading before the data. Return JSON.', 'Wrap the result in a Markdown code fence. Output exactly "OK".', '코드 블록으로 감싸서 정확히 "OK"만 출력해줘.', 'Explain caching. Put the entire answer in a code block.', '캐시를 설명해줘. 답변 전체를 코드 블록으로 감싸줘.', 'Include a short "explanation" before the JSON. Return JSON.']) {
+    const contract = classify(prompt, 'clear');
+    assert.equal(contract.mode, 'unknown', '출력 추가·포장 조건을 버리고 일부 계약만 강제하면 안 됩니다');
+    assert.equal(contract.restricted, true, '인식한 출력 조건을 후속 턴의 이력에도 반영해야 합니다');
+  }
+});
+test('공통 출력 조건 검사는 단독 계약 일반 과업 literal 원문을 보존한다', () => {
+  for (const [prompt, mode] of [['Return JSON.', 'json'], ['Explain caching. Return JSON.', 'json'], ['Explain how to add an item to an array. Return JSON.', 'json'], ['배열에 항목을 추가하는 방법을 설명해줘. JSON으로 반환해줘.', 'json'], ['Output exactly "OK".', 'literal'], ['Explain caching. Output exactly "OK".', 'literal'], ['Explain caching.', 'prose'], ['캐시를 설명해줘.', 'prose']]) {
+    assert.equal(classify(prompt, 'clear').mode, mode, '추가 출력 조건이 없는 기존 과업은 유지해야 합니다');
+  }
+  const expected = ' e\u0301\nInclude a short explanation. 코드 블록으로 감싸서 출력. ';
+  for (const prompt of [`Output exactly ${JSON.stringify(expected)}.`, `정확히 ${JSON.stringify(expected)}만 출력해줘.`]) {
+    const contract = classify(prompt, 'clear');
+    assert.equal(contract.mode, 'literal', 'literal 데이터에 들어 있는 조건은 실제 지시로 취급하면 안 됩니다');
+    assert.equal(contract.expected, expected, 'Unicode·공백·개행을 포함한 원문을 보존해야 합니다');
+    assert.equal(violation(contract, expected, policy), null);
+    assert.equal(violation(contract, `${expected}\n`, policy), 'literal_mismatch', '실제 literal 위반은 계속 검사해야 합니다');
+  }
+});
 test('원시 응답의 JSON 스칼라와 요약 첫 줄과 문자열 완전 일치를 검사한다', () => {
   for (const raw of ['{}', '[]', '"문자"', 'null', 'true', '12', ' {}\n']) assert.equal(violation({ mode: 'json' }, raw, policy), null);
   for (const raw of ['', '```json\n{}\n```', '{} 뒤 설명', 'undefined']) assert.equal(violation({ mode: 'json' }, raw, policy), 'invalid_json');
@@ -518,6 +538,12 @@ for (const [name, prompt, response] of [
   ['한글 JSON 선행 코드 펜스', '마크다운 코드 블록으로 감싸서 JSON으로 반환해줘.', '```json\n{}\n```'],
   ['영문 JSON 선행 코드 펜스', 'Wrap the result in a Markdown code fence. Return JSON.', '```json\n{}\n```'],
   ['영문 JSON 선행 인용 코드 펜스', 'Wrap the result in a "code fence". Return JSON.', '```json\n{}\n```'],
+  ['영문 JSON 선행 설명', 'Include a short explanation before the JSON. Return JSON.', 'The status is ready.\n{"status":"ready"}'],
+  ['한글 JSON 선행 설명', '먼저 짧은 설명을 붙이고 JSON으로 반환해줘.', '준비 상태입니다.\n{"status":"ready"}'],
+  ['영문 literal 선행 코드 펜스', 'Wrap the result in a Markdown code fence. Output exactly "OK".', '```\nOK\n```'],
+  ['한글 literal 선행 코드 펜스', '코드 블록으로 감싸서 정확히 "OK"만 출력해줘.', '```\nOK\n```'],
+  ['영문 일반 설명 전체 코드 블록', 'Explain caching. Put the entire answer in a code block.', '```\n**요청 요약:** 캐시를 설명합니다.\nCaching reuses stored results.\n```'],
+  ['한글 일반 설명 전체 코드 블록', '캐시를 설명해줘. 답변 전체를 코드 블록으로 감싸줘.', '```\n**요청 요약:** 캐시를 설명합니다.\n캐시는 저장한 결과를 재사용합니다.\n```'],
 ]) test(`실제 프로세스 회귀: ${name} 요청을 반대로 교정하지 않는다`, async t => {
   const f = await fixture(t);
   await processRun(f, f.event('SessionStart', { source: 'startup' }));
