@@ -27,12 +27,16 @@ function maskedPrompt(prompt) {
     catch { /* JSON 문자열 안의 원시 제어 문자는 계약으로 채택하지 않는다. */ }
   }
   const chars = prompt.split('');
+  const constraintChars = [...chars];
   let quoted = false, ambiguous = false;
   const payloads = [];
   const mask = (start, end, payload = false) => {
     const text = prompt.slice(start, end);
     if (!payload && (formatHint.test(text) || omission.test(text) || languageHint.test(text))) quoted = true;
-    for (let j = start; j < end; j++) if (chars[j] !== '\n') chars[j] = ' ';
+    for (let j = start; j < end; j++) if (chars[j] !== '\n') {
+      chars[j] = ' ';
+      if (payload) constraintChars[j] = ' ';
+    }
   };
   for (let i = 0; i < prompt.length;) {
     const lineStart = i === 0 || prompt[i - 1] === '\n';
@@ -70,19 +74,26 @@ function maskedPrompt(prompt) {
     if (/[”’]/.test(c)) ambiguous = true;
     i++;
   }
-  return { view: chars.join(''), payloads, quoted, ambiguous };
+  return { view: chars.join(''), constraintView: constraintChars.join(''), payloads, quoted, ambiguous };
 }
 
 export function classify(prompt, proseGuard = 'unknown-history') {
   if (typeof prompt !== 'string') return { mode: 'unknown', rule: 'invalid_prompt', restricted: false };
-  const { view, payloads, quoted, ambiguous } = maskedPrompt(prompt);
-  const restricted = formatHint.test(prompt) || omission.test(prompt) || languageHint.test(prompt);
+  const { view, constraintView, payloads, quoted, ambiguous } = maskedPrompt(prompt);
+  const hasOutputConstraint = /코드\s*(?:펜스|블록)|\bcode\s+(?:fence|block)s?\b/i.test(constraintView) || constraintView.split(/[.!?]/).some(clause => {
+    const actionIndex = clause.search(/\b(?:include|add|put|append|prepend)\b/i);
+    const detailIndex = clause.search(/설명|제목|개행|줄바꿈/);
+    return (actionIndex >= 0 && /\b(?:explanation|heading|title|newline|line\s+break)s?\b/i.test(clause.slice(actionIndex)))
+      || (detailIndex >= 0 && /붙|추가|넣|포함/.test(clause.slice(detailIndex)));
+  });
+  const restricted = hasOutputConstraint || formatHint.test(prompt) || omission.test(prompt) || languageHint.test(prompt);
   const unknown = rule => ({ mode: 'unknown', rule, restricted });
   if (ambiguous) return unknown('ambiguous_delimiter');
   if (quoted) return unknown('quoted_format_instruction');
   if (omission.test(view)) return unknown('recap_omission');
   if (languageHint.test(view)) return unknown('language_constraint');
   if (rejected.test(view)) return unknown('negation_condition_example');
+  if (hasOutputConstraint) return unknown('output_constraint');
   if (payloads.length && /또는|\bor\b/i.test(view)) return unknown('alternative_literals');
   if (/CSV|TSV|YAML|YML|XML|HTML|표만|테이블만|Markdown만/i.test(view)) return unknown('unsupported_format');
   const candidates = payloads.map(p => ({ mode: 'literal', expected: p.expected, rule: 'literal' }));
@@ -95,7 +106,6 @@ export function classify(prompt, proseGuard = 'unknown-history') {
   const unique = new Set(candidates.map(c => JSON.stringify([c.mode, c.expected])));
   if (unique.size > 1) return unknown('conflicting_formats');
   if (payloads.some(p => trailingContent.test(prompt.slice(p.commandEnd)))) return unknown('literal_trailing_content');
-  if (jsonCommand && /코드\s*(?:펜스|블록)|\bcode\s+(?:fence|block)s?\b/i.test(prompt.slice(0, jsonCommand.index))) return unknown('json_fence_constraint');
   if (jsonCommand && trailingContent.test(prompt.slice(jsonCommand.index + jsonCommand[0].length))) return unknown('json_trailing_content');
   if (currentProse && !reset && proseGuard === 'unknown-history') return unknown('history_guard');
   if (candidates.length) return { ...candidates[0], restricted };
