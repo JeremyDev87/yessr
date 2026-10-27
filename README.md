@@ -40,7 +40,7 @@ claude plugin validate --strict ./plugins/yessr
 claude plugin validate --strict .
 ```
 
-단위·프로세스 시험 165개와 Claude 패키지·marketplace의 엄격 검증이 통과했습니다. Claude의 요청 식별자와 환경변수, 정상·위반 출력, 중복·동시 Stop, 재개·압축 입력을 검사합니다. 합성 입력 시험은 실제 모델 응답의 검증을 대신하지 않습니다.
+단위·프로세스 시험 166개와 Claude 패키지·marketplace의 엄격 검증이 통과했습니다. Claude의 요청 식별자와 환경변수, 정상·위반 출력, 중복·동시 Stop, 재개·압축 입력을 검사합니다. 합성 입력 시험은 실제 모델 응답의 검증을 대신하지 않습니다.
 
 ## 기존 Codex v1 검증
 

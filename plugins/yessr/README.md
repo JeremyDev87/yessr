@@ -68,7 +68,7 @@ JSON·literal·일반 설명을 확정하기 전에 출력 추가·포장 단서
 
 ## 실제 검증과 남은 한계
 
-범용화 후보는 Node.js `24.15.0`에서 단위·프로세스 시험 165개를 통과했습니다. Claude Code `2.1.251`의 `claude plugin validate --strict`로 패키지와 marketplace를 검증했습니다. 진입점 경로 수정 전 후보의 `--plugin-dir` 세션에서 `SessionStart`의 정책 출력과 `UserPromptSubmit`의 literal 상태 기록을 확인했습니다. 인증 오류로 모델 응답 단계가 중단되었고, 사용 가능한 테스트 계정이 없어 실제 `Stop` 호출·수정 후속·Claude 재개·압축은 미검증입니다. 최종 후보의 합성 Claude 입력에서는 정상·위반 출력, 요청별 수정 상한, 중복·동시 호출, 재개·압축 시 이력 보호를 검사했습니다. 심볼릭 링크로 후크를 실행하는 회귀 시험과 두 호스트 환경의 실제 후크 명령 10개 시나리오도 통과했습니다.
+범용화 후보는 Node.js `24.15.0`에서 단위·프로세스 시험 166개를 통과했습니다. Claude Code `2.1.251`의 `claude plugin validate --strict`로 패키지와 marketplace를 검증했습니다. 진입점 경로 수정 전 후보의 `--plugin-dir` 세션에서 `SessionStart`의 정책 출력과 `UserPromptSubmit`의 literal 상태 기록을 확인했습니다. 인증 오류로 모델 응답 단계가 중단되었고, 사용 가능한 테스트 계정이 없어 실제 `Stop` 호출·수정 후속·Claude 재개·압축은 미검증입니다. 최종 후보의 합성 Claude 입력에서는 정상·위반 출력, 요청별 수정 상한, 중복·동시 호출, 재개·압축 시 이력 보호를 검사했습니다. 기본 실행과 `NODE_OPTIONS=--preserve-symlinks-main`을 사용한 심볼릭 링크 회귀 시험과 두 호스트 환경의 실제 후크 명령 10개 시나리오도 통과했습니다.
 
 다음은 범용화 이전 Codex v1을 CLI `0.164.0-alpha.11.1`에서 검증한 기록입니다. 현재 후보의 Codex 실제 모델 시험은 다시 실행하지 않았습니다.
 
