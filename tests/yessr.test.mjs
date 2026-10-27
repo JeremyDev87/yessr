@@ -170,6 +170,26 @@ test('단독 JSON과 앞선 과업 설명은 원시 JSON 검사를 유지한다'
   assert.equal(literal.mode, 'literal', 'literal 안의 JSON 지시는 계약이 아닌 원문이어야 합니다');
   assert.equal(literal.expected, expected, 'literal 원문을 보존해야 합니다');
 });
+test('JSON 앞 코드 펜스 단서는 언어와 인용 여부에 관계없이 교정을 생략한다', () => {
+  for (const prompt of ['마크다운 코드 블록으로 감싸서 JSON으로 반환해줘.', '코드 펜스로 감싸서 JSON으로 반환해줘.', 'Wrap the result in a Markdown code fence. Return JSON.', 'Use a code block. Return JSON.', 'Wrap the result in a "code fence". Return JSON.', 'Wrap the result in CODE FENCES. Return JSON.']) {
+    const contract = classify(prompt, 'clear');
+    assert.equal(contract.mode, 'unknown', '앞쪽 코드 펜스 조건을 무시하고 원시 JSON을 강제하면 안 됩니다');
+    assert.equal(contract.restricted, true, '불명확한 출력 조건을 후속 이력에 보존해야 합니다');
+  }
+});
+test('JSON 앞 일반 과업과 literal 안의 코드 펜스 문구는 유지한다', () => {
+  for (const prompt of ['Return JSON.', 'JSON만 출력해줘.', 'Explain caching. Return JSON.', '캐시를 설명해줘. JSON으로 반환해줘.']) {
+    const contract = classify(prompt, 'clear');
+    assert.equal(contract.mode, 'json', '단독 JSON과 앞쪽 일반 과업을 계속 검사해야 합니다');
+    assert.equal(violation(contract, '{}', policy), null, '올바른 원시 JSON을 교정하면 안 됩니다');
+    assert.equal(violation(contract, '```json\n{}\n```', policy), 'invalid_json', '포장 조건이 없는 JSON의 펜스 위반은 계속 검출해야 합니다');
+  }
+  for (const expected of ['마크다운 코드 블록으로 감싸서 JSON으로 반환해줘.', 'Wrap the result in a code fence. Return JSON.']) {
+    const contract = classify(`Output exactly ${JSON.stringify(expected)}.`, 'clear');
+    assert.equal(contract.mode, 'literal', 'literal 데이터에 들어 있는 펜스 단서를 지시로 취급하면 안 됩니다');
+    assert.equal(contract.expected, expected, 'literal 원문을 보존해야 합니다');
+  }
+});
 test('원시 응답의 JSON 스칼라와 요약 첫 줄과 문자열 완전 일치를 검사한다', () => {
   for (const raw of ['{}', '[]', '"문자"', 'null', 'true', '12', ' {}\n']) assert.equal(violation({ mode: 'json' }, raw, policy), null);
   for (const raw of ['', '```json\n{}\n```', '{} 뒤 설명', 'undefined']) assert.equal(violation({ mode: 'json' }, raw, policy), 'invalid_json');
@@ -495,6 +515,9 @@ for (const [name, prompt, response] of [
   ['영문 JSON 후속 설명', 'Return JSON only. Then explain the fields.', '{"x":1}\nx is the value.'],
   ['한글 JSON 후속 코드 펜스', 'JSON으로 반환해줘. 마크다운 코드 블록으로 감싸줘.', '```json\n{}\n```'],
   ['한글 JSON 후속 설명', 'JSON만 출력해줘. 마지막에 설명을 덧붙여줘.', '{"x":1}\nx는 값입니다.'],
+  ['한글 JSON 선행 코드 펜스', '마크다운 코드 블록으로 감싸서 JSON으로 반환해줘.', '```json\n{}\n```'],
+  ['영문 JSON 선행 코드 펜스', 'Wrap the result in a Markdown code fence. Return JSON.', '```json\n{}\n```'],
+  ['영문 JSON 선행 인용 코드 펜스', 'Wrap the result in a "code fence". Return JSON.', '```json\n{}\n```'],
 ]) test(`실제 프로세스 회귀: ${name} 요청을 반대로 교정하지 않는다`, async t => {
   const f = await fixture(t);
   await processRun(f, f.event('SessionStart', { source: 'startup' }));
