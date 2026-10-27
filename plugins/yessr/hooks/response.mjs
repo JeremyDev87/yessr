@@ -10,6 +10,7 @@ const verb = `(?:(?:출력|반환|답변|응답|답)\\s*${ending}|보여\\s*(?:�
 const boundary = '(?=$|[\\s.!?])';
 const instructionStart = '(?:^|[.!?]\\s+)';
 const instructionEnd = '(?=\\s*(?:[.!](?:\\s|$)|$))';
+const trailingContent = /[^\s.!?]/;
 const lexeme = '"(?:[^"\\\\\\r\\n]|\\\\["\\\\/bfnrt]|\\\\u[0-9A-Fa-f]{4})*"';
 const formatHint = /JSON|코드만|code only|only code|정확히|exactly|고정 문자열|literal|원문 그대로|verbatim|만\s*(?:출력|답)|only (?:output|return)|nothing else|CSV|TSV|YAML|YML|XML|HTML|표만|테이블만|Markdown만/i;
 const omission = /요청 요약(?:은 생략| 없이)|요약을 생략|복명복창 없이|요청 요약을 붙이지|접두 없이|\b(?:omit|skip)\s+(?:the\s+)?(?:recap|summary(?:\s+prefix)?|prefix)\b|no recap|without (?:a )?recap/i;
@@ -85,14 +86,16 @@ export function classify(prompt, proseGuard = 'unknown-history') {
   if (payloads.length && /또는|\bor\b/i.test(view)) return unknown('alternative_literals');
   if (/CSV|TSV|YAML|YML|XML|HTML|표만|테이블만|Markdown만/i.test(view)) return unknown('unsupported_format');
   const candidates = payloads.map(p => ({ mode: 'literal', expected: p.expected, rule: 'literal' }));
-  if (new RegExp(`JSON(?:으로만|만|으로| 형식으로)\\s*${verb}${boundary}|${instructionStart}(?:(?:return|output|reply with|respond with)\\s+(?:only\\s+)?JSON(?:\\s+only)?|JSON only|only JSON)${instructionEnd}`, 'i').test(view)) candidates.push({ mode: 'json', rule: 'json' });
+  const jsonCommand = new RegExp(`JSON(?:으로만|만|으로| 형식으로)\\s*${verb}${boundary}|${instructionStart}(?:(?:return|output|reply with|respond with)\\s+(?:only\\s+)?JSON(?:\\s+only)?|JSON only|only JSON)${instructionEnd}`, 'i').exec(view);
+  if (jsonCommand) candidates.push({ mode: 'json', rule: 'json' });
   if (new RegExp(`코드만\\s*${verb}${boundary}|${instructionStart}(?:return|output)\\s+(?:only code|code only)${instructionEnd}`, 'i').test(view)) candidates.push({ mode: 'code', rule: 'code' });
   const reset = new RegExp(`이전 출력 형식 제한을 해제하고 일반 설명으로\\s*(?:답|응답)\\s*${ending}${boundary}|Reset previous output format restrictions and explain in prose\\.`, 'i').test(view);
   const currentProse = new RegExp(`이번 답변은 일반 설명으로\\s*(?:답|응답)\\s*${ending}${boundary}|For this answer, explain in prose\\.`, 'i').test(view);
   if (reset || currentProse) candidates.push({ mode: 'prose', rule: reset ? 'reset' : 'current_prose', reset });
   const unique = new Set(candidates.map(c => JSON.stringify([c.mode, c.expected])));
   if (unique.size > 1) return unknown('conflicting_formats');
-  if (payloads.some(p => !/^[\s.!?]*$/.test(prompt.slice(p.commandEnd)))) return unknown('literal_trailing_content');
+  if (payloads.some(p => trailingContent.test(prompt.slice(p.commandEnd)))) return unknown('literal_trailing_content');
+  if (jsonCommand && trailingContent.test(prompt.slice(jsonCommand.index + jsonCommand[0].length))) return unknown('json_trailing_content');
   if (currentProse && !reset && proseGuard === 'unknown-history') return unknown('history_guard');
   if (candidates.length) return { ...candidates[0], restricted };
   if (restricted) return unknown('format_without_contract');
