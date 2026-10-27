@@ -95,6 +95,7 @@ export function classify(prompt, proseGuard = 'unknown-history') {
   const unique = new Set(candidates.map(c => JSON.stringify([c.mode, c.expected])));
   if (unique.size > 1) return unknown('conflicting_formats');
   if (payloads.some(p => trailingContent.test(prompt.slice(p.commandEnd)))) return unknown('literal_trailing_content');
+  if (jsonCommand && /코드\s*(?:펜스|블록)|\bcode\s+(?:fence|block)s?\b/i.test(prompt.slice(0, jsonCommand.index))) return unknown('json_fence_constraint');
   if (jsonCommand && trailingContent.test(prompt.slice(jsonCommand.index + jsonCommand[0].length))) return unknown('json_trailing_content');
   if (currentProse && !reset && proseGuard === 'unknown-history') return unknown('history_guard');
   if (candidates.length) return { ...candidates[0], restricted };
