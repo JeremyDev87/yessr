@@ -133,6 +133,24 @@ test('summary와 prefix 생략도 제한 신호로 보존한다', () => {
     assert.equal(contract.restricted, true, '접두 생략을 후속 이력에 반영해야 합니다');
   }
 });
+test('literal 뒤 후속 문장은 해석하지 않고 제한 이력을 보존한다', () => {
+  for (const prompt of ['Output exactly "OK". Append a newline.', 'Output exactly "OK". Repeat it twice.', '정확히 "OK"만 출력해줘. 마지막에 줄바꿈을 추가해줘.', '정확히 "OK"만 출력해줘. 두 번 반복해줘.', 'Output exactly "OK". Append a newline. Output exactly "OK".']) {
+    const contract = classify(prompt, 'clear');
+    assert.equal(contract.mode, 'unknown', '뒤 문장에 남은 조건을 무시하고 literal을 강제하면 안 됩니다');
+    assert.equal(contract.restricted, true, '불명확한 출력 제한을 후속 턴에도 보존해야 합니다');
+  }
+});
+test('단독 literal은 종결 공백과 원문 내부의 후속 지시 문구를 보존한다', () => {
+  for (const expected of ['OK', ' e\u0301\nAppend a newline. 두 번 반복해줘. ']) {
+    for (const prompt of [`정확히 ${JSON.stringify(expected)}만 출력해줘.\n`, `Output exactly ${JSON.stringify(expected)} and nothing else.\n`]) {
+      const contract = classify(prompt, 'clear');
+      assert.equal(contract.mode, 'literal', '단독 literal 지시를 계속 검사해야 합니다');
+      assert.equal(contract.expected, expected, '문자열 내부의 조건 문구와 원문 바이트를 보존해야 합니다');
+      assert.equal(violation(contract, expected, policy), null, '원문과 일치하는 응답은 교정하면 안 됩니다');
+      assert.equal(violation(contract, `${expected}\n`, policy), 'literal_mismatch', '실제 추가 개행 위반은 계속 검출해야 합니다');
+    }
+  }
+});
 test('원시 응답의 JSON 스칼라와 요약 첫 줄과 문자열 완전 일치를 검사한다', () => {
   for (const raw of ['{}', '[]', '"문자"', 'null', 'true', '12', ' {}\n']) assert.equal(violation({ mode: 'json' }, raw, policy), null);
   for (const raw of ['', '```json\n{}\n```', '{} 뒤 설명', 'undefined']) assert.equal(violation({ mode: 'json' }, raw, policy), 'invalid_json');
@@ -450,6 +468,10 @@ for (const [name, prompt, response] of [
   ['JSON 형식 질문', 'Should I output JSON? Explain the trade-offs.', '**요청 요약:** JSON의 장단점을 설명합니다.\nJSON은 구조화된 데이터 교환에 유용합니다.'],
   ['문자열 출력 가능성 질문', 'Can this program output exactly "OK"?', 'The program can output that value.'],
   ['영문 요약 접두 생략', 'Explain caching. Omit the summary prefix.', 'A cache stores reusable results.'],
+  ['영문 후속 문장 개행', 'Output exactly "OK". Append a newline.', 'OK\n'],
+  ['영문 후속 문장 반복', 'Output exactly "OK". Repeat it twice.', 'OKOK'],
+  ['한글 후속 문장 개행', '정확히 "OK"만 출력해줘. 마지막에 줄바꿈을 추가해줘.', 'OK\n'],
+  ['한글 후속 문장 반복', '정확히 "OK"만 출력해줘. 두 번 반복해줘.', 'OKOK'],
 ]) test(`실제 프로세스 회귀: ${name} 요청을 반대로 교정하지 않는다`, async t => {
   const f = await fixture(t);
   await processRun(f, f.event('SessionStart', { source: 'startup' }));

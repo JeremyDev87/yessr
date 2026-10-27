@@ -22,7 +22,7 @@ function maskedPrompt(prompt) {
   for (const match of prompt.matchAll(pattern)) {
     const raw = match[1] ?? match[2];
     const start = match.index + match[0].indexOf(raw);
-    try { literals.push({ start, end: start + raw.length, commandStart: match.index, expected: JSON.parse(raw) }); }
+    try { literals.push({ start, end: start + raw.length, commandStart: match.index, commandEnd: match.index + match[0].length, expected: JSON.parse(raw) }); }
     catch { /* JSON 문자열 안의 원시 제어 문자는 계약으로 채택하지 않는다. */ }
   }
   const chars = prompt.split('');
@@ -92,6 +92,7 @@ export function classify(prompt, proseGuard = 'unknown-history') {
   if (reset || currentProse) candidates.push({ mode: 'prose', rule: reset ? 'reset' : 'current_prose', reset });
   const unique = new Set(candidates.map(c => JSON.stringify([c.mode, c.expected])));
   if (unique.size > 1) return unknown('conflicting_formats');
+  if (payloads.some(p => !/^[\s.!?]*$/.test(prompt.slice(p.commandEnd)))) return unknown('literal_trailing_content');
   if (currentProse && !reset && proseGuard === 'unknown-history') return unknown('history_guard');
   if (candidates.length) return { ...candidates[0], restricted };
   if (restricted) return unknown('format_without_contract');
