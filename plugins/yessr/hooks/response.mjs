@@ -262,11 +262,11 @@ export async function handle(input, options = {}) {
   finally { if (locked) await rm(join(dir, 'lock'), { recursive: true, force: true }).catch(() => {}); }
 }
 
-if (process.argv[1] && await realpath(process.argv[1]).catch(() => null) === fileURLToPath(import.meta.url)) {
-  try {
+try {
+  if (process.argv[1] && await realpath(process.argv[1]) === await realpath(fileURLToPath(import.meta.url))) {
     process.stdin.setEncoding('utf8');
     let raw = ''; for await (const chunk of process.stdin) raw += chunk;
     const output = await handle(JSON.parse(raw));
     if (output) process.stdout.write(JSON.stringify(output));
-  } catch { /* 손상 입력으로 후속 요청을 만들지 않는다. */ }
-}
+  }
+} catch { /* 실행 경로나 입력이 유효하지 않으면 후속 요청을 만들지 않는다. */ }

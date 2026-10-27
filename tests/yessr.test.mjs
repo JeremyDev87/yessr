@@ -575,6 +575,19 @@ test('심볼릭 링크로 실행해도 정책을 주입하고 실제 후크를 �
   await processRun(linked, f.event('UserPromptSubmit', { prompt: 'JSON만 출력해줘.' }));
   assert.equal((await processRun(linked, f.event('Stop', badStop)))?.decision, 'block', '링크를 통한 Stop도 같은 제어기로 처리해야 합니다');
 });
+test('심볼릭 링크 보존 옵션에서도 패키지 링크의 Claude 후크를 실행한다', async t => {
+  const f = await fixture(t);
+  const link = join(f.dataRoot, '패키지 링크');
+  await symlink(resolve('plugins/yessr'), link);
+  const linked = { ...f, handlerPath: join(link, 'hooks/response.mjs') };
+  const environment = { NODE_OPTIONS: '--preserve-symlinks-main', PLUGIN_DATA: undefined, CLAUDE_PLUGIN_DATA: f.dataRoot };
+  const run = (event, extra) => processRun(linked, f.event(event, { turn_id: undefined, prompt_id: '보존된 링크', ...extra }), undefined, environment);
+  const output = await run('SessionStart', { source: 'startup' });
+  assert.equal(output?.hookSpecificOutput?.hookEventName, 'SessionStart', '링크 경로를 보존해도 정책을 주입해야 합니다');
+  await run('UserPromptSubmit', { prompt: 'JSON만 출력해줘.' });
+  assert.equal((await run('Stop', badStop))?.decision, 'block', '보존된 링크의 응답 위반도 검사해야 합니다');
+  assert.equal(await run('Stop', badStop), null, '같은 요청을 두 번 교정하면 안 됩니다');
+});
 test('실제 프로세스는 UTF-8 중간에서 나눈 요청의 원문 literal을 보존한다', async t => {
   const f = await fixture(t);
   const input = f.event('UserPromptSubmit', { prompt: '정확히 "한"만 출력해줘.' });
