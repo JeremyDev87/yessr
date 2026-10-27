@@ -1,0 +1,9 @@
+{
+  "name": "yessr",
+  "version": "0.1.0",
+  "description": "요청 요약과 정확 출력 예외를 다루는 실험용 Codex·Claude Code 응답 규칙 플러그인",
+  "author": {
+    "name": "JeremyDev87"
+  },
+  "license": "MIT"
+}

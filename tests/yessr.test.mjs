@@ -10,7 +10,7 @@ import { classify, violation, handle, digest } from '../plugins/yessr/hooks/resp
 const policyPath = resolve('plugins/yessr/policy.json');
 const handlerPath = resolve('plugins/yessr/hooks/response.mjs');
 const policy = JSON.parse(await readFile(policyPath, 'utf8'));
-test('패키지 연결은 단일 legacy manifest와 패키지 내부 후크 및 단일 Stop을 유지한다', async () => {
+test('두 호스트의 manifest는 같은 패키지와 단일 후크 정의를 사용한다', async () => {
   const catalog = JSON.parse(await readFile('.agents/plugins/marketplace.json', 'utf8'));
   assert.equal(catalog.plugins.length, 1, '플러그인은 하나여야 합니다');
   const entry = catalog.plugins[0];
@@ -26,8 +26,15 @@ test('패키지 연결은 단일 legacy manifest와 패키지 내부 후크 및 
   assert.deepEqual(Object.keys(hooks).sort(), ['SessionStart', 'Stop', 'UserPromptSubmit']);
   for (const [event, groups] of Object.entries(hooks)) {
     assert.equal(groups.length, 1, `${event} 그룹은 하나여야 합니다`);
-    assert.deepEqual(groups[0].hooks, [{ type: 'command', command: 'node "${PLUGIN_ROOT}/hooks/response.mjs"' }], `${event} 제어기는 하나여야 합니다`);
+    assert.deepEqual(groups[0].hooks, [{ type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/hooks/response.mjs"' }], `${event} 제어기는 하나여야 합니다`);
   }
+  const claudeCatalog = JSON.parse(await readFile('.claude-plugin/marketplace.json', 'utf8'));
+  assert.equal(claudeCatalog.name, catalog.name, '호스트별 marketplace 이름은 같아야 합니다');
+  assert.deepEqual(claudeCatalog.plugins, [{ name: entry.name, source: entry.source.path }]);
+  const claudeManifest = JSON.parse(await readFile(join(root, '.claude-plugin/plugin.json'), 'utf8'));
+  assert.equal(claudeManifest.name, manifest.name);
+  assert.equal(claudeManifest.version, manifest.version);
+  assert.equal(Object.hasOwn(claudeManifest, 'hooks'), false, 'Claude는 기본 hooks/hooks.json만 발견하여 중복 등록하지 않아야 합니다');
   assert.equal((await stat(join(root, 'hooks/response.mjs'))).isFile(), true, '실행할 제어기가 있어야 합니다');
 });
 const examples = [
@@ -254,6 +261,61 @@ async function fixture(t) {
   return { dataRoot, options, event, run, dir, state };
 }
 const badStop = { stop_hook_active: false, last_assistant_message: '잘못된 결과' };
+test('Claude 요청 식별자로 형식을 검사하고 같은 요청은 한 번만 교정한다', async t => {
+  const f = await fixture(t);
+  for (const [prompt_id, prompt, valid] of [
+    ['일반 설명', '캐시를 설명해줘.', '**요청 요약:** 캐시를 설명합니다.\n캐시는 결과를 보관합니다.'],
+    ['JSON', 'JSON만 출력해줘.', '{"ok":true}'],
+    ['고정 문자열', '정확히 " OK "만 출력해줘.', ' OK '],
+  ]) {
+    const identity = { turn_id: undefined, prompt_id };
+    await f.run('UserPromptSubmit', { ...identity, prompt });
+    assert.equal((await f.run('Stop', { ...identity, ...badStop })).decision, 'block');
+    await f.run('UserPromptSubmit', { ...identity, prompt });
+    assert.equal(await f.run('Stop', { ...identity, ...badStop, stop_hook_active: true, last_assistant_message: valid }), null);
+    assert.equal(await f.run('Stop', { ...identity, ...badStop }), null, '같은 요청의 반복 Stop은 다시 교정하면 안 됩니다');
+    const next = { turn_id: undefined, prompt_id: `${prompt_id}-다음` };
+    await f.run('UserPromptSubmit', { ...next, prompt });
+    assert.equal(await f.run('Stop', { ...next, ...badStop, last_assistant_message: valid }), null, '정상 응답에는 교정을 요청하면 안 됩니다');
+  }
+});
+test('Claude 요청 식별자가 없거나 다른 요청의 Stop이면 교정을 생략한다', async t => {
+  const f = await fixture(t);
+  await f.run('UserPromptSubmit', { turn_id: undefined, prompt_id: '현재 요청', prompt: 'JSON만 출력해줘.' });
+  for (const prompt_id of [undefined, null, '', 1, '이전 요청']) {
+    assert.equal(await f.run('Stop', { turn_id: undefined, prompt_id, ...badStop }), null, '식별할 수 없는 응답을 현재 요청에 연결하면 안 됩니다');
+  }
+  assert.equal(await f.run('Stop', { turn_id: '', prompt_id: '현재 요청', ...badStop }), null, '잘못된 Codex 식별자를 Claude 식별자로 대체하면 안 됩니다');
+  assert.equal((await f.run('Stop', { turn_id: undefined, prompt_id: '현재 요청', ...badStop })).decision, 'block');
+});
+test('Codex 턴 식별자는 Claude 요청 식별자보다 우선한다', async t => {
+  const f = await fixture(t);
+  await f.run('UserPromptSubmit', { prompt_id: '다른 식별자', prompt: 'JSON만 출력해줘.' });
+  assert.equal((await f.run('Stop', badStop)).decision, 'block');
+});
+test('Claude 재개와 압축은 정책을 주입하고 이전 계약을 닫는다', async t => {
+  const f = await fixture(t);
+  for (const source of ['resume', 'compact']) {
+    await f.run('UserPromptSubmit', { turn_id: undefined, prompt_id: source, prompt: 'JSON만 출력해줘.' });
+    const output = await f.run('SessionStart', { turn_id: undefined, source });
+    assert.ok(output.hookSpecificOutput.additionalContext.includes(policy.recapPrefix));
+    assert.equal(await f.run('Stop', { turn_id: undefined, prompt_id: source, ...badStop }), null);
+    await f.run('UserPromptSubmit', { turn_id: undefined, prompt_id: `${source}-설명`, prompt: '캐시를 설명해줘.' });
+    assert.equal(await f.run('Stop', { turn_id: undefined, prompt_id: `${source}-설명`, ...badStop }), null, '불명확한 이력에서 일반 설명을 강제하면 안 됩니다');
+  }
+});
+test('Claude 환경변수만 있는 실제 프로세스에서도 동시 Stop은 한 번 이하로 교정한다', async t => {
+  const f = await fixture(t);
+  const environment = { PLUGIN_DATA: undefined, CLAUDE_PLUGIN_DATA: f.dataRoot };
+  const run = (event, extra) => processRun(f, f.event(event, { turn_id: undefined, ...extra }), undefined, environment);
+  const output = await run('SessionStart', { source: 'startup' });
+  assert.equal(output.hookSpecificOutput.hookEventName, 'SessionStart');
+  await run('UserPromptSubmit', { prompt_id: '동시 요청', prompt: 'JSON만 출력해줘.' });
+  const results = await Promise.all(Array.from({ length: 6 }, () => run('Stop', { prompt_id: '동시 요청', ...badStop })));
+  assert.ok(results.filter(result => result?.decision === 'block').length <= 1, '동시 호출에서 중복 교정을 보내면 안 됩니다');
+  const state = await f.state();
+  assert.equal(state.turns[digest('동시 요청')].mode, 'json', 'Claude 요청을 실제로 기록해야 합니다');
+});
 test('영수증은 검증된 세션 시작 출처만 그대로 기록한다', async t => {
   const f = await fixture(t);
   const sources = ['startup', 'clear', 'resume', 'compact', 'fork'];
@@ -477,8 +539,9 @@ test('lock 경합 표시와 reset 경합은 이후 Stop을 억제한다', async 
   await f.run('UserPromptSubmit', { turn_id: 'fresh', prompt: 'JSON만 출력해줘.' });
   assert.equal(await f.run('Stop', { ...badStop, turn_id: 'fresh' }), null);
 });
-async function processRun(f, payload, splitAt) {
+async function processRun(f, payload, splitAt, environment = {}) {
   const input = Buffer.from(typeof payload === 'string' ? payload : JSON.stringify(payload));
+  const entry = f.handlerPath ?? handlerPath;
   const observer = `
     import { pathToFileURL } from 'node:url';
     const iterate = process.stdin[Symbol.asyncIterator].bind(process.stdin);
@@ -488,8 +551,8 @@ async function processRun(f, payload, splitAt) {
     await import(pathToFileURL(process.argv[1]).href);
     process.disconnect();
   `;
-  const child = spawn(process.execPath, splitAt === undefined ? [handlerPath] : ['--input-type=module', '-e', observer, handlerPath], {
-    env: { ...process.env, PLUGIN_DATA: f.dataRoot }, stdio: ['pipe', 'pipe', 'pipe', ...(splitAt === undefined ? [] : ['ipc'])], timeout: 10000,
+  const child = spawn(process.execPath, splitAt === undefined ? [entry] : ['--input-type=module', '-e', observer, entry], {
+    env: { ...process.env, PLUGIN_DATA: f.dataRoot, ...environment }, stdio: ['pipe', 'pipe', 'pipe', ...(splitAt === undefined ? [] : ['ipc'])], timeout: 10000,
   });
   let stdout = '', stderr = ''; child.stdout.setEncoding('utf8').on('data', b => { stdout += b; }); child.stderr.setEncoding('utf8').on('data', b => { stderr += b; });
   if (splitAt === undefined) child.stdin.end(input);
@@ -502,6 +565,16 @@ async function processRun(f, payload, splitAt) {
   assert.equal(code, 0); assert.equal(stderr, '');
   return stdout ? JSON.parse(stdout) : null;
 }
+test('심볼릭 링크로 실행해도 정책을 주입하고 실제 후크를 처리한다', async t => {
+  const f = await fixture(t);
+  const link = join(f.dataRoot, '후크 링크.mjs');
+  await symlink(handlerPath, link);
+  const linked = { ...f, handlerPath: link };
+  const output = await processRun(linked, f.event('SessionStart', { source: 'startup' }));
+  assert.equal(output?.hookSpecificOutput?.hookEventName, 'SessionStart', '실제 경로가 달라도 진입점 실행을 생략하면 안 됩니다');
+  await processRun(linked, f.event('UserPromptSubmit', { prompt: 'JSON만 출력해줘.' }));
+  assert.equal((await processRun(linked, f.event('Stop', badStop)))?.decision, 'block', '링크를 통한 Stop도 같은 제어기로 처리해야 합니다');
+});
 test('실제 프로세스는 UTF-8 중간에서 나눈 요청의 원문 literal을 보존한다', async t => {
   const f = await fixture(t);
   const input = f.event('UserPromptSubmit', { prompt: '정확히 "한"만 출력해줘.' });
