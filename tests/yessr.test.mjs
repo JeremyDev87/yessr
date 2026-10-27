@@ -210,6 +210,29 @@ test('공통 출력 조건 검사는 단독 계약 일반 과업 literal 원문�
     assert.equal(violation(contract, `${expected}\n`, policy), 'literal_mismatch', '실제 literal 위반은 계속 검사해야 합니다');
   }
 });
+test('제목값의 버전과 인용문 내부 종결부호는 출력 조건을 끊지 않는다', () => {
+  for (const title of ['"v1.2"', 'v1.2', '"Ready."', '"Ready. Now!"']) {
+    const contract = classify(`Put a ${title} title before the JSON. Return JSON.`, 'clear');
+    assert.equal(contract.mode, 'unknown', '제목 데이터 안의 구두점 때문에 추가 조건을 잃으면 안 됩니다');
+    assert.equal(contract.restricted, true, '인식한 제목 조건을 후속 이력에도 보존해야 합니다');
+  }
+});
+test('제목 문장 경계 검사는 기본 제목과 실제 문장 경계 및 단독 계약을 유지한다', () => {
+  assert.equal(classify('Put a heading before the JSON. Return JSON.', 'clear').mode, 'unknown', '기본 제목 조건을 계속 보존해야 합니다');
+  for (const prompt of ['Return JSON.', 'Explain v1.2 release notes. Return JSON.', 'Put the value in the result. Explain the title field. Return JSON.']) {
+    const contract = classify(prompt, 'clear');
+    assert.equal(contract.mode, 'json', '일반 과업과 실제 문장 경계를 유지해야 합니다');
+    assert.equal(violation(contract, '{}', policy), null);
+    assert.equal(violation(contract, 'wrong', policy), 'invalid_json', '단독 JSON 위반 검사를 유지해야 합니다');
+  }
+  assert.equal(classify('캐시 v1.2 동작을 설명해줘.', 'clear').mode, 'prose', '일반 설명을 계속 판별해야 합니다');
+  const expected = ' e\u0301\nPut a "Ready. Now!" title before v1.2. ';
+  const literal = classify(`Output exactly ${JSON.stringify(expected)}.`, 'clear');
+  assert.equal(literal.mode, 'literal', 'literal 원문의 구두점을 조건으로 해석하면 안 됩니다');
+  assert.equal(literal.expected, expected, 'literal의 구두점·공백·Unicode 원문을 보존해야 합니다');
+  assert.equal(violation(literal, expected, policy), null);
+  assert.equal(violation(literal, `${expected}\n`, policy), 'literal_mismatch');
+});
 test('원시 응답의 JSON 스칼라와 요약 첫 줄과 문자열 완전 일치를 검사한다', () => {
   for (const raw of ['{}', '[]', '"문자"', 'null', 'true', '12', ' {}\n']) assert.equal(violation({ mode: 'json' }, raw, policy), null);
   for (const raw of ['', '```json\n{}\n```', '{} 뒤 설명', 'undefined']) assert.equal(violation({ mode: 'json' }, raw, policy), 'invalid_json');
@@ -544,6 +567,10 @@ for (const [name, prompt, response] of [
   ['한글 literal 선행 코드 펜스', '코드 블록으로 감싸서 정확히 "OK"만 출력해줘.', '```\nOK\n```'],
   ['영문 일반 설명 전체 코드 블록', 'Explain caching. Put the entire answer in a code block.', '```\n**요청 요약:** 캐시를 설명합니다.\nCaching reuses stored results.\n```'],
   ['한글 일반 설명 전체 코드 블록', '캐시를 설명해줘. 답변 전체를 코드 블록으로 감싸줘.', '```\n**요청 요약:** 캐시를 설명합니다.\n캐시는 저장한 결과를 재사용합니다.\n```'],
+  ['인용 버전 제목', 'Put a "v1.2" title before the JSON. Return JSON.', 'v1.2\n{}'],
+  ['비인용 버전 제목', 'Put a v1.2 title before the JSON. Return JSON.', 'v1.2\n{}'],
+  ['인용 종결부호 제목', 'Put a "Ready." heading before the JSON. Return JSON.', 'Ready.\n{}'],
+  ['인용 여러 문장 제목', 'Put a "Ready. Now!" title before the JSON. Return JSON.', 'Ready. Now!\n{}'],
 ]) test(`실제 프로세스 회귀: ${name} 요청을 반대로 교정하지 않는다`, async t => {
   const f = await fixture(t);
   await processRun(f, f.event('SessionStart', { source: 'startup' }));

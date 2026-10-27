@@ -35,7 +35,7 @@ function maskedPrompt(prompt) {
     if (!payload && (formatHint.test(text) || omission.test(text) || languageHint.test(text))) quoted = true;
     for (let j = start; j < end; j++) if (chars[j] !== '\n') {
       chars[j] = ' ';
-      if (payload) constraintChars[j] = ' ';
+      if (payload || /[.!?]/.test(constraintChars[j])) constraintChars[j] = ' ';
     }
   };
   for (let i = 0; i < prompt.length;) {
@@ -80,7 +80,7 @@ function maskedPrompt(prompt) {
 export function classify(prompt, proseGuard = 'unknown-history') {
   if (typeof prompt !== 'string') return { mode: 'unknown', rule: 'invalid_prompt', restricted: false };
   const { view, constraintView, payloads, quoted, ambiguous } = maskedPrompt(prompt);
-  const hasOutputConstraint = /코드\s*(?:펜스|블록)|\bcode\s+(?:fence|block)s?\b/i.test(constraintView) || constraintView.split(/[.!?]/).some(clause => {
+  const hasOutputConstraint = /코드\s*(?:펜스|블록)|\bcode\s+(?:fence|block)s?\b/i.test(constraintView) || constraintView.split(/[.!?](?=\s|$)/).some(clause => {
     const actionIndex = clause.search(/\b(?:include|add|put|append|prepend)\b/i);
     const detailIndex = clause.search(/설명|제목|개행|줄바꿈/);
     return (actionIndex >= 0 && /\b(?:explanation|heading|title|newline|line\s+break)s?\b/i.test(clause.slice(actionIndex)))
