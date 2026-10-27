@@ -10,9 +10,9 @@ const verb = `(?:(?:출력|반환|답변|응답|답)\\s*${ending}|보여\\s*(?:�
 const boundary = '(?=$|[\\s.!?])';
 const lexeme = '"(?:[^"\\\\\\r\\n]|\\\\["\\\\/bfnrt]|\\\\u[0-9A-Fa-f]{4})*"';
 const formatHint = /JSON|코드만|code only|only code|정확히|exactly|고정 문자열|literal|원문 그대로|verbatim|만\s*(?:출력|답)|only (?:output|return)|nothing else|CSV|TSV|YAML|YML|XML|HTML|표만|테이블만|Markdown만/i;
-const omission = /요청 요약은 생략|요약을 생략|복명복창 없이|요청 요약을 붙이지|접두 없이|omit the recap|skip the recap|no recap|without a recap/i;
+const omission = /요청 요약(?:은 생략| 없이)|요약을 생략|복명복창 없이|요청 요약을 붙이지|접두 없이|omit the recap|skip the recap|no recap|without (?:a )?recap/i;
 const languageHint = /영어로만|\b(?:English\s+only|only\s+English)\b/i;
-const rejected = /하지 마|하지 말|하지 않|말고|금지|만약|조건|아니면|그렇지 않으면|[가-힣]+(?:라면|다면|으면)(?=\s|[,.:!?]|$)|\b(?:do not|don't|must not|if|unless|otherwise)\b|예시:|인용:|원문:|로그:|라는 문장|라고 지시/i;
+const rejected = /하지 마|하지 말|하지 않|말고|금지|만약|조건|아니면|그렇지 않으면|[가-힣]+(?:라면|다면|으면)(?=\s|[,.:!?]|$)|\b(?:do not|don't|must not|never|if|unless|otherwise)\b|예시:|인용:|원문:|로그:|라는 문장|라고 지시/i;
 
 function maskedPrompt(prompt) {
   const literals = [];

@@ -87,6 +87,27 @@ test('유효한 literal 안의 영어 전용 단서와 Unicode는 원문 데이�
   assert.equal(violation(contract, expected, policy), null);
   assert.equal(violation(contract, expected.normalize('NFC'), policy), 'literal_mismatch');
 });
+test('요약 없이 표현은 생략 제한을 보존하고 일반 설명으로 판별하지 않는다', () => {
+  for (const prompt of ['요청 요약 없이 캐시를 설명해줘.', 'Explain caching without recap.', 'Explain caching without a recap.']) {
+    const contract = classify(prompt, 'clear');
+    assert.equal(contract.mode, 'unknown', '명시적 요약 생략은 자동 교정 대상이 아니어야 합니다');
+    assert.equal(contract.restricted, true, '후속 턴에도 생략 제한 신호를 보존해야 합니다');
+  }
+});
+test('Never 부정은 출력 계약을 만들지 않고 다른 단어의 일부와 구분한다', () => {
+  for (const prompt of ['Never output JSON. Explain caching.', 'Never output exactly "OK".', 'NEVER output JSON. Explain caching.']) {
+    assert.equal(classify(prompt, 'clear').mode, 'unknown', '금지한 형식을 출력 계약으로 채택하면 안 됩니다');
+  }
+  assert.equal(classify('Explain nevermore.', 'clear').mode, 'prose', 'never가 다른 단어의 일부이면 부정으로 처리하면 안 됩니다');
+});
+test('새 생략과 부정 단서도 literal 안에서는 원문 데이터로 보존한다', () => {
+  for (const expected of ['요청 요약 없이 without recap', 'Never output JSON.']) {
+    const contract = classify(`정확히 ${JSON.stringify(expected)}만 출력해줘.`, 'clear');
+    assert.equal(contract.mode, 'literal', '문자열 내부 단서가 명시적 출력 계약을 무효화하면 안 됩니다');
+    assert.equal(contract.expected, expected, '기대 문자열의 원문을 보존해야 합니다');
+    assert.equal(violation(contract, expected, policy), null, '원문과 일치하는 응답은 교정하면 안 됩니다');
+  }
+});
 test('원시 응답의 JSON 스칼라와 요약 첫 줄과 문자열 완전 일치를 검사한다', () => {
   for (const raw of ['{}', '[]', '"문자"', 'null', 'true', '12', ' {}\n']) assert.equal(violation({ mode: 'json' }, raw, policy), null);
   for (const raw of ['', '```json\n{}\n```', '{} 뒤 설명', 'undefined']) assert.equal(violation({ mode: 'json' }, raw, policy), 'invalid_json');
@@ -393,6 +414,22 @@ test('실제 프로세스는 영어 전용 요청에 한국어 접두 교정을 
     assert.equal(receipts.some(r => r.blockPrepared), false);
     assert.equal(classify(`Explain ${JSON.stringify(prompt)}.`, 'clear').rule, 'quoted_format_instruction');
   }
+});
+for (const [name, prompt, response] of [
+  ['한국어 요약 생략', '요청 요약 없이 캐시를 설명해줘.', '캐시는 재사용할 데이터를 보관합니다.'],
+  ['영문 요약 생략', 'Explain caching without recap.', 'A cache stores reusable results.'],
+  ['JSON 부정', 'Never output JSON. Explain caching.', '**요청 요약:** 캐시를 설명합니다.\n캐시는 재사용할 데이터를 보관합니다.'],
+  ['문자열 부정', 'Never output exactly "OK".', 'Understood.'],
+]) test(`실제 프로세스 회귀: ${name} 요청을 반대로 교정하지 않는다`, async t => {
+  const f = await fixture(t);
+  await processRun(f, f.event('SessionStart', { source: 'startup' }));
+  assert.equal(await processRun(f, f.event('UserPromptSubmit', { prompt })), null);
+  assert.equal(await processRun(f, f.event('Stop', { ...badStop, last_assistant_message: response })), null, '요청에 맞는 응답에 반대 형식의 교정을 보내면 안 됩니다');
+  assert.equal((await f.state()).proseGuard, 'unknown-history', '불명확한 형식 이력을 유지해야 합니다');
+  await processRun(f, f.event('UserPromptSubmit', { turn_id: '후속', prompt: '이번 답변은 일반 설명으로 답해줘.' }));
+  assert.equal(await processRun(f, f.event('Stop', { ...badStop, turn_id: '후속', last_assistant_message: response })), null, '후속 설명 요청이 이전 제한을 임의로 지우면 안 됩니다');
+  await processRun(f, f.event('UserPromptSubmit', { turn_id: '해제', prompt: '이전 출력 형식 제한을 해제하고 일반 설명으로 답해줘.' }));
+  assert.equal((await processRun(f, f.event('Stop', { ...badStop, turn_id: '해제' }))).decision, 'block', '명시적 해제 후에는 일반 설명 검사가 다시 작동해야 합니다');
 });
 test('동시 실제 프로세스는 block과 blockPrepared를 각각 최대 한 번만 만든다', async t => {
   const f = await fixture(t); await f.run('UserPromptSubmit', { prompt: 'JSON만 출력해줘.' });
