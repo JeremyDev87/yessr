@@ -108,6 +108,31 @@ test('새 생략과 부정 단서도 literal 안에서는 원문 데이터로 �
     assert.equal(violation(contract, expected, policy), null, '원문과 일치하는 응답은 교정하면 안 됩니다');
   }
 });
+test('형식 질문과 추가 조건이 남은 영어 문장은 출력 계약으로 확정하지 않는다', () => {
+  for (const prompt of ['Output exactly "OK" followed by a newline.', 'Output exactly "OK" twice.', 'Can this program output exactly "OK"?', 'Should I output JSON? Explain the trade-offs.', 'Explain why some APIs return JSON.', 'Return JSON only, followed by an explanation.', 'Can this program output code only?']) {
+    const contract = classify(prompt, 'clear');
+    assert.equal(contract.mode, 'unknown', '문장의 일부만 출력 지시로 채택하면 안 됩니다');
+    assert.equal(contract.restricted, true, '형식 해석이 불명확하다는 이력을 유지해야 합니다');
+  }
+});
+test('완결된 영어 지시와 문장 뒤 지시는 기존 출력 계약을 유지한다', () => {
+  for (const [prompt, mode] of [['Output exactly "OK"', 'literal'], ['Output exactly "OK"!', 'literal'], ['Explain caching. Output exactly "OK" and nothing else.', 'literal'], ['Return JSON', 'json'], ['Explain caching. Return JSON only.', 'json'], ['Explain caching. Output only code.', 'code']]) {
+    const contract = classify(prompt, 'clear');
+    assert.equal(contract.mode, mode, '명확한 기존 지시는 계속 판별해야 합니다');
+    if (mode === 'literal') assert.equal(contract.expected, 'OK');
+  }
+  const expected = 'Omit the summary prefix. followed by a newline. ?';
+  const contract = classify(`Output exactly ${JSON.stringify(expected)} and nothing else.`, 'clear');
+  assert.equal(contract.mode, 'literal', '문자열 내부 문장 부호와 단서는 계약을 끊으면 안 됩니다');
+  assert.equal(contract.expected, expected, '문자열 원문을 보존해야 합니다');
+});
+test('summary와 prefix 생략도 제한 신호로 보존한다', () => {
+  for (const prompt of ['Explain caching. Omit the summary prefix.', 'Explain caching. Omit the prefix.', 'Explain caching. Skip the summary.']) {
+    const contract = classify(prompt, 'clear');
+    assert.equal(contract.mode, 'unknown', '명시적 접두 생략은 교정 대상이 아니어야 합니다');
+    assert.equal(contract.restricted, true, '접두 생략을 후속 이력에 반영해야 합니다');
+  }
+});
 test('원시 응답의 JSON 스칼라와 요약 첫 줄과 문자열 완전 일치를 검사한다', () => {
   for (const raw of ['{}', '[]', '"문자"', 'null', 'true', '12', ' {}\n']) assert.equal(violation({ mode: 'json' }, raw, policy), null);
   for (const raw of ['', '```json\n{}\n```', '{} 뒤 설명', 'undefined']) assert.equal(violation({ mode: 'json' }, raw, policy), 'invalid_json');
@@ -420,6 +445,11 @@ for (const [name, prompt, response] of [
   ['영문 요약 생략', 'Explain caching without recap.', 'A cache stores reusable results.'],
   ['JSON 부정', 'Never output JSON. Explain caching.', '**요청 요약:** 캐시를 설명합니다.\n캐시는 재사용할 데이터를 보관합니다.'],
   ['문자열 부정', 'Never output exactly "OK".', 'Understood.'],
+  ['문자열 뒤 개행 조건', 'Output exactly "OK" followed by a newline.', 'OK\n'],
+  ['문자열 반복 조건', 'Output exactly "OK" twice.', 'OKOK'],
+  ['JSON 형식 질문', 'Should I output JSON? Explain the trade-offs.', '**요청 요약:** JSON의 장단점을 설명합니다.\nJSON은 구조화된 데이터 교환에 유용합니다.'],
+  ['문자열 출력 가능성 질문', 'Can this program output exactly "OK"?', 'The program can output that value.'],
+  ['영문 요약 접두 생략', 'Explain caching. Omit the summary prefix.', 'A cache stores reusable results.'],
 ]) test(`실제 프로세스 회귀: ${name} 요청을 반대로 교정하지 않는다`, async t => {
   const f = await fixture(t);
   await processRun(f, f.event('SessionStart', { source: 'startup' }));

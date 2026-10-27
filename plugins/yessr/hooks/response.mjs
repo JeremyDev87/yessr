@@ -8,15 +8,17 @@ export const digest = value => createHash('sha256').update(JSON.stringify(value)
 const ending = '(?:해\\s*(?:주십시오|주세요|줘)?|하라|하세요|하십시오)';
 const verb = `(?:(?:출력|반환|답변|응답|답)\\s*${ending}|보여\\s*(?:줘|주세요))`;
 const boundary = '(?=$|[\\s.!?])';
+const instructionStart = '(?:^|[.!?]\\s+)';
+const instructionEnd = '(?=\\s*(?:[.!](?:\\s|$)|$))';
 const lexeme = '"(?:[^"\\\\\\r\\n]|\\\\["\\\\/bfnrt]|\\\\u[0-9A-Fa-f]{4})*"';
 const formatHint = /JSON|코드만|code only|only code|정확히|exactly|고정 문자열|literal|원문 그대로|verbatim|만\s*(?:출력|답)|only (?:output|return)|nothing else|CSV|TSV|YAML|YML|XML|HTML|표만|테이블만|Markdown만/i;
-const omission = /요청 요약(?:은 생략| 없이)|요약을 생략|복명복창 없이|요청 요약을 붙이지|접두 없이|omit the recap|skip the recap|no recap|without (?:a )?recap/i;
+const omission = /요청 요약(?:은 생략| 없이)|요약을 생략|복명복창 없이|요청 요약을 붙이지|접두 없이|\b(?:omit|skip)\s+(?:the\s+)?(?:recap|summary(?:\s+prefix)?|prefix)\b|no recap|without (?:a )?recap/i;
 const languageHint = /영어로만|\b(?:English\s+only|only\s+English)\b/i;
 const rejected = /하지 마|하지 말|하지 않|말고|금지|만약|조건|아니면|그렇지 않으면|[가-힣]+(?:라면|다면|으면)(?=\s|[,.:!?]|$)|\b(?:do not|don't|must not|never|if|unless|otherwise)\b|예시:|인용:|원문:|로그:|라는 문장|라고 지시/i;
 
 function maskedPrompt(prompt) {
   const literals = [];
-  const pattern = new RegExp(`정확히\\s+(${lexeme})만\\s*${verb}${boundary}|\\b(?:output|return|reply with)\\s+exactly\\s+(${lexeme})(?:\\s+and nothing else)?${boundary}`, 'gi');
+  const pattern = new RegExp(`정확히\\s+(${lexeme})만\\s*${verb}${boundary}|${instructionStart}(?:output|return|reply with)\\s+exactly\\s+(${lexeme})(?:\\s+and nothing else)?${instructionEnd}`, 'gi');
   for (const match of prompt.matchAll(pattern)) {
     const raw = match[1] ?? match[2];
     const start = match.index + match[0].indexOf(raw);
@@ -83,8 +85,8 @@ export function classify(prompt, proseGuard = 'unknown-history') {
   if (payloads.length && /또는|\bor\b/i.test(view)) return unknown('alternative_literals');
   if (/CSV|TSV|YAML|YML|XML|HTML|표만|테이블만|Markdown만/i.test(view)) return unknown('unsupported_format');
   const candidates = payloads.map(p => ({ mode: 'literal', expected: p.expected, rule: 'literal' }));
-  if (new RegExp(`JSON(?:으로만|만|으로| 형식으로)\\s*${verb}${boundary}|\\b(?:return|output|reply with|respond with)\\s+(?:only\\s+)?JSON(?:\\s+only)?${boundary}|(?:^|[.!?]\\s*)(?:JSON only|only JSON)\\s*[.!?]?(?=$|\\n)`, 'i').test(view)) candidates.push({ mode: 'json', rule: 'json' });
-  if (new RegExp(`코드만\\s*${verb}${boundary}|\\b(?:return|output)\\s+(?:only code|code only)${boundary}`, 'i').test(view)) candidates.push({ mode: 'code', rule: 'code' });
+  if (new RegExp(`JSON(?:으로만|만|으로| 형식으로)\\s*${verb}${boundary}|${instructionStart}(?:(?:return|output|reply with|respond with)\\s+(?:only\\s+)?JSON(?:\\s+only)?|JSON only|only JSON)${instructionEnd}`, 'i').test(view)) candidates.push({ mode: 'json', rule: 'json' });
+  if (new RegExp(`코드만\\s*${verb}${boundary}|${instructionStart}(?:return|output)\\s+(?:only code|code only)${instructionEnd}`, 'i').test(view)) candidates.push({ mode: 'code', rule: 'code' });
   const reset = new RegExp(`이전 출력 형식 제한을 해제하고 일반 설명으로\\s*(?:답|응답)\\s*${ending}${boundary}|Reset previous output format restrictions and explain in prose\\.`, 'i').test(view);
   const currentProse = new RegExp(`이번 답변은 일반 설명으로\\s*(?:답|응답)\\s*${ending}${boundary}|For this answer, explain in prose\\.`, 'i').test(view);
   if (reset || currentProse) candidates.push({ mode: 'prose', rule: reset ? 'reset' : 'current_prose', reset });

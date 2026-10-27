@@ -23,13 +23,15 @@
 | `캐시를 설명해줘. JSON만 출력해줘.` | JSON (`json`) |
 | `코드만 출력해줘.` / `Return code only.` | 코드 (`code`) |
 | `정확히 "OK"만 출력해줘.` / `Output exactly "OK" and nothing else.` | 고정 문자열 (`literal`), 기대값 `OK` |
-| `요청 요약은 생략하고 캐시를 설명해줘.` / `복명복창 없이 캐시를 설명해줘.` / `Explain caching with no recap.` | `unknown`, 접두를 다시 요구하지 않음 |
+| `요청 요약은 생략하고 캐시를 설명해줘.` / `복명복창 없이 캐시를 설명해줘.` / `Explain caching with no recap.` / `Explain caching. Omit the summary prefix.` | `unknown`, 접두를 다시 요구하지 않음 |
 | `영어로만 캐시를 설명해줘.` / `Explain caching in English only.` / `Explain caching. Only English.` | `unknown`, 한국어 접두를 요구하지 않음 |
 | `JSON이 무엇인지 설명해줘.` / `“JSON만 출력해”라는 문장을 설명해줘.` | `unknown`, 형식 논의·인용 |
 | 코드 펜스나 들여쓴 코드 안의 `JSON만 출력해줘` | `unknown`, 코드 안 지시 |
 | `JSON만 출력해줘라고 지시하지 마.` / `조건이 맞으면 JSON만 출력해줘.` | `unknown`, 부정·조건 |
 | `CSV로만 요약해줘.` | `unknown`, 미지원 형식 |
 | `정확히 "OK"만 출력해줘. 코드만 출력해줘.` / `정확히 "OK" 또는 "NO"만 출력해줘.` | `unknown`, 상충·대안 |
+
+영문 출력 지시는 문장 시작의 명령형이 문장 끝이나 입력 끝까지 완결된 경우에만 채택합니다. `Should I output JSON?` 같은 형식 질문과 `Output exactly "OK" followed by a newline.`처럼 해석하지 않은 추가 조건은 `unknown`으로 건너뜁니다.
 
 명시적인 언어·요약 생략·정확 출력 요청은 정책에서도 우선합니다. 언어 제한의 자동 검사 생략 단서는 `영어로만`과 영단어 경계의 `English only`·`only English`로 한정합니다. 영어 단서는 대소문자를 구분하지 않고 단어 사이의 공백·탭·개행을 하나 이상 허용합니다. 예를 들어 `Explain caching in English   only.`도 해당합니다. 이 단서는 명시적 형식 해제와 함께 있어도 `unknown`이며, 인용 안에서도 제한 신호를 남깁니다. 유효한 고정 문자열의 payload 안에서는 원문 데이터로만 다룹니다. 다른 언어·표현을 모두 판별하거나 접두를 번역하지 않습니다. 자동 판별을 생략해도 정책 안내는 유지합니다. 인용·부정·조건을 보수적으로 다루므로 유효한 요청 일부도 자동 검사하지 않을 수 있습니다.
 
