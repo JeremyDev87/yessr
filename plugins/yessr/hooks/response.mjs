@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { mkdir, lstat, open, readFile, rename, rm } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { mkdir, lstat, open, readFile, realpath, rename, rm } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -171,8 +171,9 @@ export async function handle(input, options = {}) {
     if (!input || Array.isArray(input) || typeof input !== 'object' || typeof input.session_id !== 'string' || !input.session_id.length) return null;
     const event = input.hook_event_name;
     if (!['SessionStart', 'UserPromptSubmit', 'Stop'].includes(event)) return null;
+    const turnId = input.turn_id === undefined ? input.prompt_id : input.turn_id;
     if (event === 'SessionStart' ? !['startup', 'resume', 'clear', 'compact', 'fork'].includes(input.source)
-      : typeof input.turn_id !== 'string' || !input.turn_id.length) return null;
+      : typeof turnId !== 'string' || !turnId.length) return null;
     if (event === 'UserPromptSubmit' && typeof input.prompt !== 'string') return null;
     if (event === 'Stop' && input.last_assistant_message !== null && typeof input.last_assistant_message !== 'string') return null;
     const policy = JSON.parse(await readFile(options.policyPath ?? join(dirname(fileURLToPath(import.meta.url)), '../policy.json'), 'utf8'));
@@ -180,7 +181,7 @@ export async function handle(input, options = {}) {
       || typeof policy.recapPrefix !== 'string' || !policy.recapPrefix.trim()
       || !['clarityInstructions', 'preservationInstructions', 'exactOutputInstructions'].every(k => Array.isArray(policy[k]) && policy[k].length && policy[k].every(v => typeof v === 'string' && v.trim()))) return null;
     const context = [policy.recapPrefix, ...policy.clarityInstructions, ...policy.preservationInstructions, ...policy.exactOutputInstructions].join('\n');
-    const dataRoot = options.dataRoot ?? process.env.PLUGIN_DATA;
+    const dataRoot = options.dataRoot ?? process.env.PLUGIN_DATA ?? process.env.CLAUDE_PLUGIN_DATA;
     if (typeof dataRoot !== 'string' || !dataRoot) return null;
     await privateDirectory(dataRoot, true); await privateDirectory(join(dataRoot, 'state'));
     dir = join(dataRoot, 'state', digest(input.session_id)); const newSession = await privateDirectory(dir);
@@ -200,7 +201,7 @@ export async function handle(input, options = {}) {
       state.proseGuard = 'unknown-history';
       state.version = 2;
     }
-    const turnKey = event === 'SessionStart' ? null : digest(input.turn_id);
+    const turnKey = event === 'SessionStart' ? null : digest(turnId);
     const receipt = { plugin: 'yessr', version: '0.1.0', event, sessionHash: digest(input.session_id), turnHash: turnKey, mode: 'unknown', code: 'skip', blockPrepared: false };
     if (event === 'SessionStart') receipt.source = input.source;
     if (event === 'Stop') receipt.stopHookActive = typeof input.stop_hook_active === 'boolean' ? input.stop_hook_active : null;
@@ -261,7 +262,7 @@ export async function handle(input, options = {}) {
   finally { if (locked) await rm(join(dir, 'lock'), { recursive: true, force: true }).catch(() => {}); }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && await realpath(process.argv[1]).catch(() => null) === fileURLToPath(import.meta.url)) {
   try {
     process.stdin.setEncoding('utf8');
     let raw = ''; for await (const chunk of process.stdin) raw += chunk;

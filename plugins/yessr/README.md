@@ -1,10 +1,17 @@
 # Yessr! 0.1.0
 
-현재 요청의 요약과 정확 출력 예외를 다루는 **실험용 로컬 Codex 플러그인**입니다. Node.js `24.15.0`과 CLI `0.164.0-alpha.11.1`에서 현재 legacy manifest의 정상 설치·신뢰와 실제 모델 응답 연결을 확인했습니다. Desktop 직접 입력·압축은 미검증이며, 수정 후에도 출력 형식이 틀릴 수 있습니다.
+현재 요청의 요약과 정확 출력 예외를 다루는 **실험용 로컬 Codex·Claude Code 플러그인**입니다. 응답 정책·분류기·검사·상태 저장은 한 구현을 공유합니다. 초기 호환 후보는 Claude Code `2.1.251`에서 로딩·정책 주입·요청 판별을 확인했습니다. 실제 모델 응답과 Stop 연결은 사용 가능한 테스트 계정이 없어 검증하지 못했습니다. 기존 Codex v1의 실제 검증과 현재 후보의 검증은 아래에서 구분합니다. 수정 후에도 출력 형식이 틀릴 수 있습니다.
 
 ## 동작과 범위
 
-응답 지침의 정본은 [policy.json](policy.json) 하나입니다. README는 동작과 한계를 설명합니다. `SessionStart`에서 정책을 주입합니다. `UserPromptSubmit`에서는 요청의 출력 계약을 보수적으로 판별하고 상태를 기록합니다. `Stop`에서는 제공된 최신 최종 응답의 구조를 검사합니다. 각 이벤트는 한 제어기만 호출합니다. manifest의 명시적 hook 경로가 기본 파일 탐색을 대체하므로 별도 중복 등록은 필요하지 않습니다.
+응답 지침의 정본은 [policy.json](policy.json) 하나입니다. README는 동작과 한계를 설명합니다. `SessionStart`에서 정책을 주입합니다. `UserPromptSubmit`에서는 요청의 출력 계약을 보수적으로 판별하고 상태를 기록합니다. `Stop`에서는 제공된 최신 최종 응답의 구조를 검사합니다. 각 이벤트는 같은 제어기 하나만 호출합니다. Codex는 manifest의 명시적 hook 경로를 사용합니다. Claude Code는 기본 `hooks/hooks.json`을 발견하므로 manifest에서 hooks를 중복 선언하지 않습니다.
+
+| 호스트 | 플러그인 manifest | 요청 식별자 | 상태 경로 환경변수 |
+| --- | --- | --- | --- |
+| Codex | `.codex-plugin/plugin.json` | `turn_id` | `PLUGIN_DATA` |
+| Claude Code | `.claude-plugin/plugin.json` | `prompt_id` | `CLAUDE_PLUGIN_DATA` |
+
+`turn_id`가 없는 입력에서만 `prompt_id`를 사용합니다. 요청 식별자가 없거나 유효하지 않으면 자동 교정을 생략합니다. 상태 경로는 `PLUGIN_DATA`를 우선하고 없으면 `CLAUDE_PLUGIN_DATA`를 사용합니다. 정상 호스트가 제공한 서로 다른 데이터 폴더를 사용하므로 상태를 공유하지 않습니다. 두 호스트는 공통 명령의 `${CLAUDE_PLUGIN_ROOT}`를 지원합니다. 호스트를 추측하거나 transcript 파일을 읽어 요청을 복원하지 않습니다. Claude 웹·일반 채팅 앱과 다른 에이전트 호스트는 지원 대상이 아닙니다.
 
 명확하게 판별한 계약에서만 수정을 요청합니다. 일반 설명은 요청 요약 접두를, JSON은 원시 응답 전체의 JSON 문법을, 고정 문자열은 원문 일치를 검사합니다. JSON은 객체·배열뿐 아니라 문자열·숫자·불리언·`null`도 허용합니다. 스키마와 의미의 정확성은 검사하지 않습니다. 고정 문자열의 공백·개행·Unicode를 trim하거나 정규화하지 않습니다.
 
@@ -53,7 +60,7 @@ JSON·literal·일반 설명을 확정하기 전에 출력 추가·포장 단서
 | resume·fork·compact, 상태 유실·손상 | 이전 형식 불명으로 일반 설명 추측 억제 |
 | startup·clear | 유효한 새 세션 상태 시작 |
 
-호스트 식별자·상태 연결이 불확실하거나 입력·정책·상태 저장에 문제가 있으면 수정 요청을 생략합니다. `PLUGIN_DATA` 아래에 세션·턴 상태를 저장하므로 정상 실행에는 쓰기 권한이 필요합니다. 상태 삭제는 이전 제한을 안전하게 해제하는 방법이 아닙니다.
+호스트 식별자·상태 연결이 불확실하거나 입력·정책·상태 저장에 문제가 있으면 수정 요청을 생략합니다. 호스트의 데이터 폴더 아래에 세션·턴 상태를 저장하므로 정상 실행에는 쓰기 권한이 필요합니다. 상태 삭제는 이전 제한을 안전하게 해제하는 방법이 아닙니다.
 
 세션 상태는 v2를 사용합니다. 유효한 v1 상태를 읽으면 이전 분류·문자열 디코딩 결과를 다시 사용하지 않도록 모든 기존 계약을 닫고 기대값을 제거합니다. 턴 식별자·요청 해시·교정 사용 기록은 보존하며 같은 턴을 다시 제출해도 계약을 열지 않습니다. 이때 `unknown-history`를 설정하므로 새 exact 계약은 검사하지만 일반 설명은 기존의 명시적 형식 해제·startup·clear까지 보수적으로 처리합니다. 비활성 계약의 `Stop` 기록은 `unknown`·`inactive_contract`이며 위반 판정을 하지 않습니다.
 
@@ -61,7 +68,11 @@ JSON·literal·일반 설명을 확정하기 전에 출력 추가·포장 단서
 
 ## 실제 검증과 남은 한계
 
-- **정상 로딩:** 세 후크 `SessionStart`, `UserPromptSubmit`, `Stop`의 신뢰와 실제 호출을 확인했습니다. 이전 portable manifest는 설치 후에도 후크를 로드하지 못했습니다. 현재 단일 legacy manifest로 이 문제를 해결했습니다.
+범용화 후보는 Node.js `24.15.0`에서 단위·프로세스 시험 165개를 통과했습니다. Claude Code `2.1.251`의 `claude plugin validate --strict`로 패키지와 marketplace를 검증했습니다. 진입점 경로 수정 전 후보의 `--plugin-dir` 세션에서 `SessionStart`의 정책 출력과 `UserPromptSubmit`의 literal 상태 기록을 확인했습니다. 인증 오류로 모델 응답 단계가 중단되었고, 사용 가능한 테스트 계정이 없어 실제 `Stop` 호출·수정 후속·Claude 재개·압축은 미검증입니다. 최종 후보의 합성 Claude 입력에서는 정상·위반 출력, 요청별 수정 상한, 중복·동시 호출, 재개·압축 시 이력 보호를 검사했습니다. 심볼릭 링크로 후크를 실행하는 회귀 시험과 두 호스트 환경의 실제 후크 명령 10개 시나리오도 통과했습니다.
+
+다음은 범용화 이전 Codex v1을 CLI `0.164.0-alpha.11.1`에서 검증한 기록입니다. 현재 후보의 Codex 실제 모델 시험은 다시 실행하지 않았습니다.
+
+- **정상 로딩:** 세 후크 `SessionStart`, `UserPromptSubmit`, `Stop`의 신뢰와 실제 호출을 확인했습니다. 이전 portable manifest는 설치 후에도 후크를 로드하지 못했습니다. Codex legacy manifest로 이 문제를 해결했습니다.
 - **형식과 수정:** 실제 CLI 형식 시나리오 8개의 최종 응답 중 7개가 통과했습니다. 요청 요약 누락과 개행 문자열 오류는 한 번의 수정 요청으로 복구되었습니다. `" OK "`는 뒤 공백이 빠진 `" OK"`로 남았습니다. 기대 바이트는 `20 4f 4b 20`, 실제 바이트는 `20 4f 4b`입니다. 위반 검출과 수정 상한을 확인한 결과이며, 최종 출력의 정확성을 보장하는 결과가 아닙니다.
 - **재개와 압축:** 명시 UUID 재개 후 지속 JSON 요청 유지, 명시적 형식 해제, 목표 변경, 실제 `/compact`, 압축 후 첫 진행 보고·최종 답변의 요청 요약을 확인했습니다. 후속 메타데이터 시험에서 `source=startup/resume/compact`와 같은 턴의 `stopHookActive=false→true`를 직접 확인했습니다. `compact`의 SessionStart 기록은 다음 사용자 턴에 관찰되었습니다.
 - **공존 한계:** 기존 전역 `CLAUDE.md`·`AGENTS.md` 규칙을 유지한 환경입니다. 응답 전체를 Yessr만의 효과로 귀속하지 않습니다. 다른 플러그인의 Stop은 활성 상태가 아니었으므로 Stop 간 동시 동작은 검증하지 않았습니다. 패키지 안의 정책 정본은 하나이며, 전역 규칙의 이전·삭제는 이번 범위에 포함하지 않습니다.
@@ -69,9 +80,24 @@ JSON·literal·일반 설명을 확정하기 전에 출력 추가·포장 단서
 
 ## 설치와 신뢰 검토
 
-패키지는 [.codex-plugin/plugin.json](.codex-plugin/plugin.json) 하나를 manifest로 사용합니다. 최상위 `hooks`는 플러그인 루트 기준 `./hooks/hooks.json`을 가리킵니다. CLI `0.164.0-alpha.11.1`에 대응하는 공식 소스는 [legacy manifest의 최상위 hooks를 읽고](https://github.com/openai/codex/blob/6905ecede7816e91373e9eabda3f6b0368fc747b/codex-rs/core-plugins/src/manifest.rs#L49-L73), [AgentPlugin 형식의 후크는 로드하지 않습니다](https://github.com/openai/codex/blob/6905ecede7816e91373e9eabda3f6b0368fc747b/codex-rs/core-plugins/src/loader.rs#L973-L983). 스키마를 선언한 루트 `plugin.json`은 [legacy 경로보다 먼저 선택되므로](https://github.com/openai/codex/blob/6905ecede7816e91373e9eabda3f6b0368fc747b/codex-rs/utils/plugins/src/plugin_namespace.rs#L43-L64) 함께 두지 않습니다. 이 호환성 설명과 실제 호출 검증은 위 CLI 버전을 기준으로 합니다.
+Codex는 [.codex-plugin/plugin.json](.codex-plugin/plugin.json)을 사용합니다. 최상위 `hooks`는 플러그인 루트 기준 `./hooks/hooks.json`을 가리킵니다. CLI `0.164.0-alpha.11.1`에 대응하는 공식 소스는 [legacy manifest의 최상위 hooks를 읽고](https://github.com/openai/codex/blob/6905ecede7816e91373e9eabda3f6b0368fc747b/codex-rs/core-plugins/src/manifest.rs#L49-L73), [AgentPlugin 형식의 후크는 로드하지 않습니다](https://github.com/openai/codex/blob/6905ecede7816e91373e9eabda3f6b0368fc747b/codex-rs/core-plugins/src/loader.rs#L973-L983). 스키마를 선언한 루트 `plugin.json`은 [legacy 경로보다 먼저 선택되므로](https://github.com/openai/codex/blob/6905ecede7816e91373e9eabda3f6b0368fc747b/codex-rs/utils/plugins/src/plugin_namespace.rs#L43-L64) 함께 두지 않습니다. Claude Code용 [.claude-plugin/plugin.json](.claude-plugin/plugin.json)은 같은 패키지에 설치 메타데이터만 추가합니다.
 
-Node.js 24가 Codex 실행 환경의 `PATH`에 있어야 합니다. 필수 npm 의존성이나 빌드 단계는 없습니다. 다음 절차로 설치하고 해당 환경의 후크를 직접 검토하십시오.
+Node.js 24가 호스트 실행 환경의 `PATH`에 있어야 합니다. 필수 npm 의존성이나 빌드 단계는 없습니다.
+
+### Claude Code
+
+저장소 루트에서 `claude --plugin-dir ./plugins/yessr`를 실행하면 현재 세션에만 불러옵니다. 영구 설치는 다음 명령을 순서대로 실행합니다.
+
+```sh
+claude plugin marketplace add .
+claude plugin install yessr@yessr-local
+```
+
+새 Claude Code 세션의 `/hooks`에서 세 이벤트와 실행 명령을 검토하십시오. 기존 설치를 이미 불러온 세션에 `--plugin-dir`를 추가하여 같은 플러그인을 중복 로드하지 마십시오. `prompt_id`와 `CLAUDE_PLUGIN_DATA`를 제공하지 않는 버전에서는 자동 검사가 생략될 수 있습니다. 현재 검증 버전은 `2.1.251`이며 최소 지원 버전 전체를 조사하지 않았습니다.
+
+### Codex
+
+다음 절차로 설치하고 해당 환경의 후크를 직접 검토하십시오.
 
 1. 저장소 루트에서 Node 버전을 확인하십시오: `node --version`.
 2. 저장소 루트에서 로컬 marketplace를 등록하십시오: `codex plugin marketplace add .`.
@@ -81,7 +107,7 @@ Node.js 24가 Codex 실행 환경의 `PATH`에 있어야 합니다. 필수 npm �
 
 이전 portable 후보가 이미 설치되어 있으면 Codex의 정상 제거·설치 절차로 수정본을 다시 설치하십시오. 같은 `0.1.0` 버전이므로 설치 목록의 버전 표시만으로 교체를 판단하지 마십시오. 설치 사본에 `.codex-plugin/plugin.json`이 있고 루트 `plugin.json`이 없는지 확인한 뒤 `/hooks`에서 세 이벤트를 검토하십시오.
 
-설치·활성화와 후크 신뢰는 별개입니다. 후크 정의가 바뀌면 다시 검토해야 합니다. 설치 사본의 경로·내용과 실제 이벤트 호출을 확인한 뒤에만 그 호스트에서 작동한다고 판단할 수 있습니다. 기존 공통 규칙의 전환은 별도 검토 대상이며 이 패키지는 전역 지침·설정·신뢰 정보를 수정하지 않습니다. lifecycle hook 플러그인은 공식 문서상 수동 Desktop 설치 대상이며 공개 플러그인 디렉터리 제출 대상이 아닙니다.
+설치·활성화와 후크 신뢰는 별개입니다. 이번 범용화로 명령의 환경변수가 바뀌었으므로 Codex에서는 새 후크 정의를 다시 검토해야 합니다. 설치 사본의 경로·내용과 실제 이벤트 호출을 확인한 뒤에만 그 호스트에서 작동한다고 판단할 수 있습니다. 기존 공통 규칙의 전환은 별도 검토 대상이며 이 패키지는 전역 지침·설정·신뢰 정보를 수정하지 않습니다. lifecycle hook 플러그인은 OpenAI 공식 문서상 수동 Desktop 설치 대상이며 공개 플러그인 디렉터리 제출 대상이 아닙니다.
 
 ## 로컬 검증과 라이선스
 
@@ -95,4 +121,4 @@ node --test tests/yessr.test.mjs
 
 [MIT](LICENSE)를 적용합니다. 선별 차용한 문구와 참조 범위는 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md), 해당 MIT 전문은 [licenses/](licenses/)에 있습니다.
 
-공식 근거: [플러그인 구조·marketplace·설치](https://developers.openai.com/plugins/build/plugins), [후크 이벤트·신뢰·Stop](https://learn.chatgpt.com/docs/hooks).
+공식 근거: [OpenAI 플러그인 구조·환경변수](https://developers.openai.com/plugins/build/plugins), [Codex 후크 이벤트·신뢰·Stop](https://learn.chatgpt.com/docs/hooks), [Claude manifest·환경변수](https://code.claude.com/docs/en/plugins-reference), [Claude 후크 입력·출력](https://code.claude.com/docs/en/hooks), [Claude marketplace](https://code.claude.com/docs/en/plugin-marketplaces).
