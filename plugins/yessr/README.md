@@ -84,6 +84,8 @@ Codex는 [.codex-plugin/plugin.json](.codex-plugin/plugin.json)을 사용합니�
 
 Node.js 24가 호스트 실행 환경의 `PATH`에 있어야 합니다. 필수 npm 의존성이나 빌드 단계는 없습니다.
 
+LLM에 설치를 맡기려면 [LLM용 전역 설치 안내](https://github.com/JeremyDev87/yessr/blob/main/install.md)를 사용하십시오. 전역 설치는 현재 사용자 계정의 지속 설치이며, 선택한 호스트 하나만 대상으로 합니다.
+
 ### Claude Code
 
 저장소 루트에서 `claude --plugin-dir ./plugins/yessr`를 실행하면 현재 세션에만 불러옵니다. 영구 설치는 다음 명령을 순서대로 실행합니다.
@@ -97,7 +99,7 @@ claude plugin install yessr@yessr-local
 
 ### Codex
 
-다음 절차로 설치하고 해당 환경의 후크를 직접 검토하십시오.
+CLI 설치 지원은 해당 환경의 `codex plugin add --help`로 확인하십시오. 지원하는 환경에서는 위 전역 설치 안내를 사용할 수 있습니다. 다음은 Desktop 수동 설치 절차입니다. 설치 후 해당 환경의 후크를 직접 검토하십시오.
 
 1. 저장소 루트에서 Node 버전을 확인하십시오: `node --version`.
 2. 저장소 루트에서 로컬 marketplace를 등록하십시오: `codex plugin marketplace add .`.
@@ -107,7 +109,7 @@ claude plugin install yessr@yessr-local
 
 이전 portable 후보가 이미 설치되어 있으면 Codex의 정상 제거·설치 절차로 수정본을 다시 설치하십시오. 같은 `0.1.0` 버전이므로 설치 목록의 버전 표시만으로 교체를 판단하지 마십시오. 설치 사본에 `.codex-plugin/plugin.json`이 있고 루트 `plugin.json`이 없는지 확인한 뒤 `/hooks`에서 세 이벤트를 검토하십시오.
 
-설치·활성화와 후크 신뢰는 별개입니다. 이번 범용화로 명령의 환경변수가 바뀌었으므로 Codex에서는 새 후크 정의를 다시 검토해야 합니다. 설치 사본의 경로·내용과 실제 이벤트 호출을 확인한 뒤에만 그 호스트에서 작동한다고 판단할 수 있습니다. 기존 공통 규칙의 전환은 별도 검토 대상이며 이 패키지는 전역 지침·설정·신뢰 정보를 수정하지 않습니다. lifecycle hook 플러그인은 OpenAI 공식 문서상 수동 Desktop 설치 대상이며 공개 플러그인 디렉터리 제출 대상이 아닙니다.
+설치·활성화와 후크 신뢰는 별개입니다. 이번 범용화로 명령의 환경변수가 바뀌었으므로 Codex에서는 새 후크 정의를 다시 검토해야 합니다. 설치 사본의 경로·내용과 실제 이벤트 호출을 확인한 뒤에만 그 호스트에서 작동한다고 판단할 수 있습니다. 기존 공통 규칙의 전환은 별도 검토 대상이며 이 패키지는 전역 지침·설정·신뢰 정보를 수정하지 않습니다. lifecycle hook 플러그인은 OpenAI 공식 문서상 공개 플러그인 디렉터리 제출 대상이 아닙니다.
 
 ## 로컬 검증과 라이선스
 
