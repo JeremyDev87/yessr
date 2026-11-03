@@ -1,0 +1,49 @@
+# 임시 검증용: PR #6(fix/windows-safe-hooks @ 94499eb)의 native Windows 실기 검증. PR #6에는 포함하지 않는다.
+name: windows-verify-pr6
+on:
+  push:
+    branches: [ci/windows-verify-pr6]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: 실행 환경 기록
+        run: |
+          node -p "JSON.stringify({platform:process.platform,node:process.version,arch:process.arch,tmpdir:require('os').tmpdir()})"
+          "PowerShell $($PSVersionTable.PSVersion)"
+          foreach ($p in @($env:GITHUB_WORKSPACE, [IO.Path]::GetTempPath())) { "$p -> $((Get-Volume -DriveLetter $p[0]).FileSystem)" }
+          whoami
+          (Get-Acl -LiteralPath ([IO.Path]::GetTempPath())).Access | Format-Table IdentityReference,FileSystemRights,AccessControlType,IsInherited -AutoSize
+      - name: 전체 테스트
+        run: node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=junit.xml tests/yessr.test.mjs
+      - name: SessionStart 실행 시간(첫 실행 포함)
+        if: always()
+        run: |
+          $d = Join-Path $env:RUNNER_TEMP 'yessr-timing'
+          New-Item -ItemType Directory $d | Out-Null
+          $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          icacls $d /inheritance:r /grant:r "*${me}:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" | Out-Null
+          $env:PLUGIN_DATA = $d
+          $ev = '{"hook_event_name":"SessionStart","session_id":"timing","source":"startup"}'
+          foreach ($i in 1..3) {
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            $out = $ev | node plugins/yessr/hooks/response.mjs
+            $sw.Stop()
+            "run $i : $($sw.ElapsedMilliseconds) ms, exit $LASTEXITCODE, stdout chars $("$out".Length)"
+          }
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: windows-junit
+          path: junit.xml
