@@ -1,11 +1,14 @@
 // 임시 진단용: PR #6의 Windows ACL 검사가 어디서 실패하는지 출력한다. PR #6에는 포함하지 않는다.
 import { spawn } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
-import { win32 } from 'node:path';
+import { mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, win32 } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { assertWindowsPrivatePath, isWindowsPrivateMetadata } from '../plugins/yessr/hooks/windows-security.mjs';
 import { handle } from '../plugins/yessr/hooks/response.mjs';
 
-const target = process.argv[2];
+const target = process.argv[2] === 'tmp' ? await mkdtemp(join(tmpdir(), 'yessr-diag-')) : process.argv[2];
+console.log('target:', target);
 let started = performance.now();
 try { await assertWindowsPrivatePath(target); console.log('assert: ok', Math.round(performance.now() - started), 'ms'); }
 catch (error) { console.log('assert: FAIL', error.code, Math.round(performance.now() - started), 'ms'); }
@@ -28,3 +31,11 @@ try { console.log('pure verdict:', isWindowsPrivateMetadata(JSON.parse(stdout), 
 started = performance.now();
 const output = await handle({ hook_event_name: 'SessionStart', session_id: 'diag', source: 'startup' }, { dataRoot: target });
 console.log('handle:', output ? 'output' : 'null', Math.round(performance.now() - started), 'ms');
+
+const cli = spawn(process.execPath, [fileURLToPath(new URL('../plugins/yessr/hooks/response.mjs', import.meta.url))],
+  { env: { ...process.env, PLUGIN_DATA: target }, windowsHide: true });
+let cliOut = '';
+cli.stdout.setEncoding('utf8').on('data', value => { cliOut += value; });
+started = performance.now();
+const cliCode = await new Promise(resolve => { cli.on('close', resolve); cli.stdin.end(JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'diag-cli', source: 'startup' })); });
+console.log('cli(node spawn): exit', cliCode, 'stdout chars', cliOut.length, Math.round(performance.now() - started), 'ms');
