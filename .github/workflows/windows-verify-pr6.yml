@@ -25,7 +25,15 @@ jobs:
           foreach ($p in @($env:GITHUB_WORKSPACE, [IO.Path]::GetTempPath())) { "$p -> $((Get-Volume -DriveLetter $p[0]).FileSystem)" }
           whoami
           (Get-Acl -LiteralPath ([IO.Path]::GetTempPath())).Access | Format-Table IdentityReference,FileSystemRights,AccessControlType,IsInherited -AutoSize
+      - name: ACL 검사 진단
+        run: |
+          $d = Join-Path $env:RUNNER_TEMP 'yessr-diag'
+          New-Item -ItemType Directory $d | Out-Null
+          $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          icacls $d /inheritance:r /grant:r "*${me}:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" | Out-Null
+          node .github/windows-diag.mjs $d
       - name: 전체 테스트
+        if: always()
         run: node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=junit.xml tests/yessr.test.mjs
       - name: SessionStart 실행 시간(첫 실행 포함)
         if: always()
