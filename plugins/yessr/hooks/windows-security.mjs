@@ -48,7 +48,7 @@ try {
     $aces += @{ sid=$ace.SecurityIdentifier.Value; type=$type; mask=$ace.AccessMask; flags=[int]$ace.AceFlags }
   }
   @{
-    path=$actualPath; fileSystem=[string]$volume[0].FileSystemType; driveType=[string]$volume[0].DriveType
+    path=$path; fileSystem=[string]$volume[0].FileSystemType; driveType=[string]$volume[0].DriveType
     userSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; ownerSid=$owner
     daclPresent=($null -ne $raw.DiscretionaryAcl -and ([int]$raw.ControlFlags -band 4) -ne 0); aces=@($aces)
   } | ConvertTo-Json -Compress -Depth 4
