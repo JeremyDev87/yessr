@@ -125,19 +125,49 @@ export function violation(contract, response, policy) {
   }
 }
 
+function privateMode(info, hostRoot = false) {
+  return (info.mode & (hostRoot ? 0o022n : 0o077n)) === 0n;
+}
+function sameFile(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+function safeFile(info) {
+  return info.isFile() && !info.isSymbolicLink() && info.nlink === 1n && privateMode(info)
+    && typeof info.dev === 'bigint' && typeof info.ino === 'bigint' && info.ino > 0n;
+}
+function unsafeFile() { return Object.assign(new Error('unsafe_file'), { code: 'YESSR_UNSAFE_STORAGE' }); }
 async function privateDirectory(path, hostRoot = false) {
   const created = await mkdir(path, { recursive: true, mode: 0o700 });
-  const info = await lstat(path);
-  if (!info.isDirectory() || info.isSymbolicLink() || (info.mode & (hostRoot ? 0o022 : 0o077))) throw new Error('unsafe_directory');
+  const info = await lstat(path, { bigint: true });
+  if (!info.isDirectory() || info.isSymbolicLink() || !privateMode(info, hostRoot)) throw new Error('unsafe_directory');
   return created !== undefined;
 }
-async function readPrivate(path) {
-  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+async function openPrivateFile(path, append = false) {
+  let file, before;
   try {
-    const info = await file.stat();
-    if (!info.isFile() || (info.mode & 0o077)) throw new Error('unsafe_file');
-    return await file.readFile('utf8');
-  } finally { await file.close(); }
+    if (append) {
+      try { file = await open(path, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); }
+      catch (error) { if (error.code !== 'EEXIST') throw error; }
+    }
+    if (!file) {
+      before = await lstat(path, { bigint: true });
+      if (!safeFile(before)) throw unsafeFile();
+      file = await open(path, (append ? constants.O_WRONLY | constants.O_APPEND : constants.O_RDONLY) | constants.O_NOFOLLOW);
+    }
+    const info = await file.stat({ bigint: true });
+    const after = await lstat(path, { bigint: true });
+    if (!safeFile(info) || !safeFile(after) || !sameFile(info, after) || (before && !sameFile(before, info))) throw unsafeFile();
+    return file;
+  } catch (error) {
+    try { if (file) await file.close(); }
+    finally { if (before || file || error.code === 'ELOOP') throw unsafeFile(); }
+    throw error;
+  }
+}
+async function readPrivate(path) {
+  const file = await openPrivateFile(path);
+  try { return await file.readFile('utf8'); }
+  finally { await file.close(); }
 }
 async function atomicWrite(path, value) {
   const temp = `${path}.${randomUUID()}.tmp`;
@@ -191,6 +221,7 @@ export async function handle(input, options = {}) {
     let state;
     try { state = JSON.parse(await readPrivate(join(dir, 'session.json'))); if (!validState(state)) throw new Error('invalid_state'); }
     catch (error) {
+      if (error.code === 'YESSR_UNSAFE_STORAGE') throw error;
       if (event === 'Stop') return null;
       state = { version: 2, proseGuard: 'unknown-history', ready: false, activeTurn: null, acknowledged: observedMarker, turns: {} };
       if (error.code !== 'ENOENT' || !newSession) await atomicWrite(join(dir, 'uncertainty'), randomUUID());
@@ -250,10 +281,8 @@ export async function handle(input, options = {}) {
       }
     }
     await atomicWrite(join(dir, 'session.json'), state);
-    const receiptFile = await open(join(dir, 'receipts.jsonl'), constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
+    const receiptFile = await openPrivateFile(join(dir, 'receipts.jsonl'), true);
     try {
-      const info = await receiptFile.stat();
-      if (!info.isFile() || (info.mode & 0o077)) throw new Error('unsafe_receipt');
       await receiptFile.writeFile(`${JSON.stringify(receipt)}\n`); await receiptFile.sync();
     } finally { await receiptFile.close(); }
     if (result?.decision === 'block' && await marker(dir) !== state.acknowledged) return null;
