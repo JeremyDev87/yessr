@@ -32,10 +32,19 @@ started = performance.now();
 const output = await handle({ hook_event_name: 'SessionStart', session_id: 'diag', source: 'startup' }, { dataRoot: target });
 console.log('handle:', output ? 'output' : 'null', Math.round(performance.now() - started), 'ms');
 
-const cli = spawn(process.execPath, [fileURLToPath(new URL('../plugins/yessr/hooks/response.mjs', import.meta.url))],
-  { env: { ...process.env, PLUGIN_DATA: target }, windowsHide: true });
-let cliOut = '';
-cli.stdout.setEncoding('utf8').on('data', value => { cliOut += value; });
-started = performance.now();
-const cliCode = await new Promise(resolve => { cli.on('close', resolve); cli.stdin.end(JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'diag-cli', source: 'startup' })); });
-console.log('cli(node spawn): exit', cliCode, 'stdout chars', cliOut.length, Math.round(performance.now() - started), 'ms');
+// 실제 호스트처럼 BOM 없는 stdin으로 CLI 수명주기 각 단계의 시간을 잰다.
+const session = { session_id: 'diag-cli', turn_id: 'turn-1' };
+for (const event of [
+  { ...session, hook_event_name: 'SessionStart', source: 'startup' },
+  { ...session, hook_event_name: 'UserPromptSubmit', prompt: 'JSON만 출력해줘.' },
+  { ...session, hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: '잘못된 결과' },
+  { ...session, hook_event_name: 'Stop', stop_hook_active: true, last_assistant_message: '{}' },
+]) {
+  const cli = spawn(process.execPath, [fileURLToPath(new URL('../plugins/yessr/hooks/response.mjs', import.meta.url))],
+    { env: { ...process.env, PLUGIN_DATA: target }, windowsHide: true });
+  let cliOut = '';
+  cli.stdout.setEncoding('utf8').on('data', value => { cliOut += value; });
+  started = performance.now();
+  const cliCode = await new Promise(resolve => { cli.on('close', resolve); cli.stdin.end(JSON.stringify(event)); });
+  console.log(`cli ${event.hook_event_name}: exit ${cliCode}, ${Math.round(performance.now() - started)} ms, stdout ${cliOut.slice(0, 80)}`);
+}
