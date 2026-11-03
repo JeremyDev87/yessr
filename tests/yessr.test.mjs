@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { constants } from 'node:fs';
 import fs, { mkdtemp, rm, readFile, writeFile, mkdir, stat, chmod, symlink, readdir } from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -261,6 +262,92 @@ async function fixture(t) {
   return { dataRoot, options, event, run, dir, state };
 }
 const badStop = { stop_hook_active: false, last_assistant_message: '잘못된 결과' };
+for (const target of ['session.json', 'uncertainty', 'receipts.jsonl']) {
+  for (const kind of ['symlink', 'link']) test(`파일 보호: ${target}의 ${kind}를 거부하고 외부 원문을 보존한다`, async t => {
+    const f = await fixture(t);
+    const path = join(f.dir, target), outside = join(f.dataRoot, '외부');
+    const original = target === 'session.json' ? JSON.stringify(await f.state()) : '외부 원문';
+    await writeFile(outside, original, { mode: 0o600 });
+    await rm(path, { force: true }); await fs[kind](outside, path);
+    assert.equal(await processRun(f, f.event('SessionStart', { source: 'startup' })), null, '보안 실패를 복구로 취급하면 안 됩니다');
+    assert.equal(await readFile(outside, 'utf8'), original, '외부 원문을 변경하면 안 됩니다');
+  });
+  test(`파일 보호: ${target}의 open 직전 교체는 데이터 접근 전에 거부한다`, async t => {
+    const f = await fixture(t), path = join(f.dir, target), outside = join(f.dataRoot, '외부');
+    const original = target === 'session.json' ? JSON.stringify(await f.state()) : '외부 원문';
+    if (target === 'uncertainty') await writeFile(path, '', { mode: 0o600 });
+    await writeFile(outside, original, { mode: 0o600 });
+    const realOpen = fs.open; let swaps = 0, accesses = 0, opened;
+    t.mock.method(fs, 'open', async (name, ...args) => {
+      if (name !== path || swaps || (args[0] & constants.O_EXCL)) return realOpen(name, ...args);
+      swaps++; await fs.rename(outside, path);
+      opened = await realOpen(name, ...args);
+      for (const method of ['readFile', 'writeFile']) {
+        const originalMethod = opened[method].bind(opened);
+        t.mock.method(opened, method, (...values) => { accesses++; return originalMethod(...values); });
+      }
+      if (target === 'session.json') {
+        const close = opened.close.bind(opened);
+        t.mock.method(opened, 'close', async () => { await close(); throw new Error('합성 close 오류'); });
+      }
+      return opened;
+    });
+    syncBuiltinESMExports();
+    try { assert.equal(await f.run('SessionStart', { source: 'startup' }), null); }
+    finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+    assert.equal(swaps, 1); assert.equal(accesses, 0, '검증 전에 핸들 데이터를 사용하면 안 됩니다');
+    assert.equal(opened.fd, -1, '실패한 핸들을 닫아야 합니다');
+    assert.equal(await readFile(path, 'utf8'), original);
+  });
+}
+test('파일 보호: 없는 영수증에 open 직전 삽입한 링크를 거부한다', async t => {
+  const f = await fixture(t), path = join(f.dir, 'receipts.jsonl'), outside = join(f.dataRoot, '외부');
+  await rm(path); await writeFile(outside, '외부 원문', { mode: 0o600 });
+  const realOpen = fs.open; let swaps = 0;
+  t.mock.method(fs, 'open', async (name, ...args) => {
+    if (name === path && !swaps) { swaps++; await symlink(outside, path); }
+    return realOpen(name, ...args);
+  });
+  syncBuiltinESMExports();
+  try { assert.equal(await f.run('SessionStart', { source: 'startup' }), null); }
+  finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+  assert.equal(swaps, 1); assert.equal(await readFile(outside, 'utf8'), '외부 원문');
+});
+test('권한: 공개 루트와 하위 폴더 및 상태 파일을 거부한다', async t => {
+  for (const target of ['root', 'state', 'session.json']) {
+    const f = await fixture(t);
+    const path = target === 'root' ? f.dataRoot : target === 'state' ? join(f.dataRoot, 'state') : join(f.dir, target);
+    await chmod(path, target === 'root' ? 0o777 : target === 'state' ? 0o755 : 0o644);
+    assert.equal(await processRun(f, f.event('SessionStart', { source: 'startup' })), null);
+  }
+});
+test('파일 보호: 2의 53승보다 큰 파일 식별자의 한 비트 차이를 거부한다', async t => {
+  const f = await fixture(t), path = join(f.dir, 'session.json');
+  const realOpen = fs.open, realLstat = fs.lstat;
+  let accesses = 0, opened;
+  t.mock.method(fs, 'lstat', async (name, options) => {
+    const info = await realLstat(name, options);
+    if (name === path) { assert.equal(options.bigint, true); info.ino = 9007199254740992n; }
+    return info;
+  });
+  t.mock.method(fs, 'open', async (name, ...args) => {
+    const file = await realOpen(name, ...args);
+    if (name === path) {
+      opened = file;
+      const originalStat = file.stat.bind(file), originalRead = file.readFile.bind(file);
+      t.mock.method(file, 'stat', async options => {
+        assert.equal(options.bigint, true);
+        const info = await originalStat(options); info.ino = 9007199254740993n; return info;
+      });
+      t.mock.method(file, 'readFile', (...values) => { accesses++; return originalRead(...values); });
+    }
+    return file;
+  });
+  syncBuiltinESMExports();
+  try { assert.equal(await f.run('SessionStart', { source: 'startup' }), null); }
+  finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+  assert.equal(accesses, 0); assert.equal(opened.fd, -1);
+});
 test('Claude 요청 식별자로 형식을 검사하고 같은 요청은 한 번만 교정한다', async t => {
   const f = await fixture(t);
   for (const [prompt_id, prompt, valid] of [
