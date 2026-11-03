@@ -66,6 +66,18 @@ JSON·literal·일반 설명을 확정하기 전에 출력 추가·포장 단서
 
 호출 기록인 `receipts.jsonl`에는 세션·턴 식별자의 해시, 판별 결과, 수정 요청 준비 여부를 남깁니다. `SessionStart`에는 실제 입력의 `source`를 기록합니다. `Stop`에는 실제 입력의 `stop_hook_active`를 `stopHookActive` 키로 기록합니다. 호출 기록에는 요청·응답 본문을 남기지 않습니다. 별도 세션 상태에는 고정 문자열 비교에 필요한 기대값이 저장될 수 있습니다.
 
+## Windows 지원 조건
+
+Windows 지원 기준은 Node.js 24, native Windows의 로컬 NTFS 저장 경로, 실행 가능한 기본 Windows PowerShell 5.1입니다. **실제 Windows에서의 후크·파일 보호 동작은 아직 검증하지 않았습니다.** WSL·모의 실행은 native Windows 검증을 대신하지 않습니다. UNC·SMB, ReFS, 파일시스템이나 ACL을 확인할 수 없는 경로는 지원 범위에 포함하지 않습니다.
+
+호스트가 제공한 데이터 폴더(`dataRoot`)부터 실제 상태 폴더·파일까지 비공개 ACL이 필요합니다. 소유자는 현재 사용자·SYSTEM·Administrators 중 하나여야 하며, 이들 외의 주체에 권한을 주는 Allow 항목은 거부합니다. CREATOR OWNER는 상속 전용 항목만 허용합니다. NULL DACL이나 해석할 수 없는 권한도 허용하지 않습니다. 부모 폴더뿐 아니라 기존 상태 파일과 새로 만든 파일도 검사 대상입니다.
+
+ACL 검사는 읽기 전용입니다. ACL·실행 정책·호스트 설정을 자동으로 바꾸거나 데이터를 다른 경로로 옮기지 않습니다. PowerShell 실행 불가, 검사 시간 초과, 불명확한 결과 등으로 안전을 확인할 수 없으면 정책 주입과 자동 교정을 생략합니다. 이때 CLI는 종료 코드 0으로 끝나며 stdout·stderr를 출력하지 않습니다. Windows에서 `chmod 0700`만 실행하는 것은 ACL 검증을 대신하지 않습니다.
+
+현재 사용자·SYSTEM·Administrators와 호스트가 제공한 `dataRoot` 바깥의 조상 경로는 신뢰합니다. 같은 계정이나 관리자에 의한 공격, 외부 조상 경로의 권한은 검사 범위 밖입니다. ACL 검사와 파일 식별자 재검사는 Windows의 원자적 no-follow 보장을 뜻하지 않습니다. POSIX의 기존 권한 검사와 `0700` 폴더·`0600` 파일 생성 규칙은 유지합니다.
+
+Windows ACL 검사 비용은 실제 환경에서 측정하지 않았습니다. 아래 166개 시험 기록은 이전 범용화 후보의 결과이며, 이번 Windows 변경의 검증 결과가 아닙니다.
+
 ## 실제 검증과 남은 한계
 
 범용화 후보는 Node.js `24.15.0`에서 단위·프로세스 시험 166개를 통과했습니다. Claude Code `2.1.251`의 `claude plugin validate --strict`로 패키지와 marketplace를 검증했습니다. 진입점 경로 수정 전 후보의 `--plugin-dir` 세션에서 `SessionStart`의 정책 출력과 `UserPromptSubmit`의 literal 상태 기록을 확인했습니다. 인증 오류로 모델 응답 단계가 중단되었고, 사용 가능한 테스트 계정이 없어 실제 `Stop` 호출·수정 후속·Claude 재개·압축은 미검증입니다. 최종 후보의 합성 Claude 입력에서는 정상·위반 출력, 요청별 수정 상한, 중복·동시 호출, 재개·압축 시 이력 보호를 검사했습니다. 기본 실행과 `NODE_OPTIONS=--preserve-symlinks-main`을 사용한 심볼릭 링크 회귀 시험과 두 호스트 환경의 실제 후크 명령 10개 시나리오도 통과했습니다.

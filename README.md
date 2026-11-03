@@ -30,6 +30,7 @@ https://raw.githubusercontent.com/JeremyDev87/yessr/main/install.md
 
 - 이 저장소를 로컬에 준비하십시오. 아래 셸 명령은 저장소 루트에서 실행합니다.
 - 호스트 실행 환경의 `PATH`에 Node.js 24가 있어야 합니다. npm 패키지 설치나 빌드는 필요하지 않습니다.
+- Windows는 Node.js 24·native Windows·로컬 NTFS·기본 Windows PowerShell 5.1·비공개 ACL을 전제로 하며, 실제 Windows 검증 여부와 제한은 [Windows 지원 조건](plugins/yessr/README.md#windows-지원-조건)을 확인하십시오.
 - Codex 또는 Claude Code의 로컬 플러그인 실행 환경이 필요합니다. 최소 지원 버전 전체와 다른 운영체제의 호환성은 확인하지 않았습니다.
 
 버전을 먼저 확인하십시오.
