@@ -3,6 +3,7 @@ import { constants } from 'node:fs';
 import { mkdir, lstat, open, readFile, realpath, rename, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assertWindowsPrivatePath } from './windows-security.mjs';
 
 export const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const ending = '(?:해\\s*(?:주십시오|주세요|줘)?|하라|하세요|하십시오)';
@@ -126,7 +127,7 @@ export function violation(contract, response, policy) {
 }
 
 function privateMode(info, hostRoot = false) {
-  return (info.mode & (hostRoot ? 0o022n : 0o077n)) === 0n;
+  return process.platform === 'win32' || (info.mode & (hostRoot ? 0o022n : 0o077n)) === 0n;
 }
 function sameFile(left, right) {
   return left.dev === right.dev && left.ino === right.ino;
@@ -140,7 +141,19 @@ async function privateDirectory(path, hostRoot = false) {
   const created = await mkdir(path, { recursive: true, mode: 0o700 });
   const info = await lstat(path, { bigint: true });
   if (!info.isDirectory() || info.isSymbolicLink() || !privateMode(info, hostRoot)) throw new Error('unsafe_directory');
+  if (process.platform === 'win32') {
+    await assertWindowsPrivatePath(path);
+    const after = await lstat(path, { bigint: true });
+    if (!after.isDirectory() || after.isSymbolicLink() || !sameFile(info, after)) throw unsafeFile();
+  }
   return created !== undefined;
+}
+async function verifyPrivateFile(path, file, before) {
+  const info = await file.stat({ bigint: true });
+  if (!safeFile(info) || (before && !sameFile(before, info))) throw unsafeFile();
+  if (process.platform === 'win32') await assertWindowsPrivatePath(path);
+  const after = await lstat(path, { bigint: true });
+  if (!safeFile(after) || !sameFile(info, after)) throw unsafeFile();
 }
 async function openPrivateFile(path, append = false) {
   let file, before;
@@ -154,9 +167,7 @@ async function openPrivateFile(path, append = false) {
       if (!safeFile(before)) throw unsafeFile();
       file = await open(path, (append ? constants.O_WRONLY | constants.O_APPEND : constants.O_RDONLY) | constants.O_NOFOLLOW);
     }
-    const info = await file.stat({ bigint: true });
-    const after = await lstat(path, { bigint: true });
-    if (!safeFile(info) || !safeFile(after) || !sameFile(info, after) || (before && !sameFile(before, info))) throw unsafeFile();
+    await verifyPrivateFile(path, file, before);
     return file;
   } catch (error) {
     try { if (file) await file.close(); }
@@ -173,7 +184,10 @@ async function atomicWrite(path, value) {
   const temp = `${path}.${randomUUID()}.tmp`;
   const file = await open(temp, 'wx', 0o600);
   try {
-    try { await file.writeFile(JSON.stringify(value)); await file.sync(); }
+    try {
+      if (process.platform === 'win32') await verifyPrivateFile(temp, file);
+      await file.writeFile(JSON.stringify(value)); await file.sync();
+    }
     finally { await file.close(); }
     await rename(temp, path);
   }

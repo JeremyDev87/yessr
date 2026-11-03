@@ -5,8 +5,120 @@ import fs, { mkdtemp, rm, readFile, writeFile, mkdir, stat, chmod, symlink, read
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { spawn } from 'node:child_process';
+import cp, { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { classify, violation, handle, digest } from '../plugins/yessr/hooks/response.mjs';
+import { assertWindowsPrivatePath, isWindowsPrivateMetadata } from '../plugins/yessr/hooks/windows-security.mjs';
+
+const windows = process.platform === 'win32';
+const windowsPath = 'C:\\비공개\\한글 공백 [x] $;\'파일';
+const aclMetadata = path => ({ path, fileSystem: 'NTFS', driveType: 'Fixed', userSid: 'S-1-5-21-1-2-3-1001',
+  ownerSid: 'S-1-5-21-1-2-3-1001', daclPresent: true,
+  aces: [{ sid: 'S-1-5-21-1-2-3-1001', type: 'Allow', mask: 2032127, flags: 0 }] });
+
+test('Windows ACL 순수 판정은 신뢰 SID와 상속 전용 ACE만 허용한다', () => {
+  for (const ownerSid of ['S-1-5-21-1-2-3-1001', 'S-1-5-18', 'S-1-5-32-544']) {
+    assert.equal(isWindowsPrivateMetadata({ ...aclMetadata(windowsPath), ownerSid }, windowsPath), true);
+  }
+  for (const change of [{ ownerSid: 'S-1-5-21-9' }, { daclPresent: false }, { fileSystem: 'ReFS' },
+    { driveType: 'Network' }, { path: 'C:\\다른 파일' }, { userSid: null }, { aces: null }]) {
+    assert.equal(isWindowsPrivateMetadata({ ...aclMetadata(windowsPath), ...change }, windowsPath), false);
+  }
+  for (const [change, accepted] of [
+    [{sid:'S-1-1-0'}, false], [{sid:'S-1-1-0',type:'Deny'}, true],
+    [{sid:'S-1-3-0',flags:11}, true], [{sid:'S-1-3-0',flags:3}, false],
+    [{type:'CallbackAllow'}, false], [{type:'ObjectAllow'}, false], [{flags:32}, false],
+    [{mask:'1'}, false], [{mask:4294967295}, false], [{sid:'Administrators'}, false],
+  ]) {
+    const data = aclMetadata(windowsPath); data.aces = [{...data.aces[0], ...change}];
+    assert.equal(isWindowsPrivateMetadata(data, windowsPath), accepted);
+  }
+  const data = aclMetadata(windowsPath);
+  data.aces.push({sid:'S-1-1-0',type:'Deny',mask:-1,flags:0}, {sid:'S-1-1-0',type:'Allow',mask:1,flags:0});
+  assert.equal(isWindowsPrivateMetadata(data, windowsPath), false, 'Deny가 공개 Allow를 상쇄하면 안 됩니다');
+  for (const path of ['\\\\server\\share', '\\\\?\\C:\\private', 'C:relative', 'C:\\file:stream']) {
+    assert.equal(isWindowsPrivateMetadata(aclMetadata(path), path), false);
+  }
+});
+
+test('Windows ACL 수집 계약은 실제 대체 자식의 오류와 시간 제한을 처리한다', async t => {
+  const originalSpawn = cp.spawn, originalRoot = process.env.SystemRoot;
+  process.env.SystemRoot = 'C:\\Windows';
+  let child, invocation, selectedScript, missing = false;
+  t.mock.method(cp, 'spawn', (executable, args, options) => {
+    invocation = {executable,args,options};
+    child = originalSpawn(missing ? join(tmpdir(), '없는-yessr-powershell') : process.execPath,
+      missing ? [] : ['-e', selectedScript], {stdio:['pipe','pipe','pipe']}); return child;
+  });
+  syncBuiltinESMExports();
+  const run = async (script, accepted = false) => {
+    selectedScript = script;
+    const pending = assertWindowsPrivatePath(windowsPath), closed = once(child, 'close');
+    if (accepted) await pending; else await assert.rejects(pending, {code:'YESSR_UNSAFE_STORAGE'});
+    await closed;
+    assert.ok(child.stdin.destroyed && child.stdout.destroyed && child.stderr.destroyed);
+  };
+  try {
+    await run(`let raw='';process.stdin.setEncoding('utf8');process.stdin.on('data',c=>raw+=c);process.stdin.on('end',()=>process.stdout.write(JSON.stringify({...${JSON.stringify(aclMetadata(windowsPath))},path:JSON.parse(raw).path})));`, true);
+    assert.equal(invocation.executable, 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+    assert.equal(invocation.options.shell, false);
+    assert.deepEqual(invocation.args.slice(0,4), ['-NoLogo','-NoProfile','-NonInteractive','-Command']);
+    assert.equal(invocation.args[4].includes(windowsPath), false);
+    assert.equal(/ExecutionPolicy|Set-Acl|icacls/.test(invocation.args[4]), false);
+    for (const [name, script] of [['깨진 JSON', 'process.stdout.write("broken")'],
+      ['비정상 종료', 'process.exit(2)'], ['출력 한도', 'process.stdout.write("x".repeat(262145));setInterval(()=>{},1000)'],
+      ['오류 출력 한도', 'process.stderr.write("x".repeat(262145));setInterval(()=>{},1000)'], ['시간 제한', 'setInterval(()=>{},1000)']]) {
+      await t.test(name, () => run(script));
+    }
+    missing = true;
+    await assert.rejects(assertWindowsPrivatePath(windowsPath), {code:'YESSR_UNSAFE_STORAGE'});
+  } finally {
+    t.mock.restoreAll(); syncBuiltinESMExports();
+    if (originalRoot === undefined) delete process.env.SystemRoot; else process.env.SystemRoot = originalRoot;
+  }
+});
+
+test('Windows 분기 합성: 생성한 파일은 ACL 허용 후에만 쓰고 공개 ACL은 거부한다', {skip: windows ? 'Darwin/POSIX 합성 전용; Windows는 실제 ACL 사례로 검증' : false}, async t => {
+  const work = await mkdtemp(join(tmpdir(), 'yessr-win-branch-'));
+  const cwd = process.cwd(), platform = Object.getOwnPropertyDescriptor(process, 'platform'), systemRoot = process.env.SystemRoot;
+  const realSpawn = cp.spawn, realOpen = fs.open; const audited = new Set(), written = []; let denied = '';
+  const options = {dataRoot:'C:/private',policyPath};
+  try {
+    process.chdir(work); process.env.SystemRoot = 'C:\\Windows'; Object.defineProperty(process, 'platform', {value:'win32',configurable:true});
+    t.mock.method(cp, 'spawn', () => {
+      const child = realSpawn(process.execPath, ['-e', `let raw='';process.stdin.setEncoding('utf8');process.stdin.on('data',c=>raw+=c);process.stdin.on('end',()=>{const path=JSON.parse(raw).path;process.stdout.write(JSON.stringify({...${JSON.stringify(aclMetadata(''))},path,daclPresent:!path.includes(${JSON.stringify(denied || '\u0000')})}));});`], {stdio:['pipe','pipe','pipe']});
+      const end = child.stdin.end.bind(child.stdin);
+      child.stdin.end = (raw, ...args) => { const path = JSON.parse(raw).path; child.on('close', code => {if(code === 0) audited.add(path);}); return end(raw,...args); };
+      return child;
+    });
+    t.mock.method(fs, 'open', async (path, ...args) => {
+      const file = await realOpen(path,...args), write = file.writeFile.bind(file);
+      t.mock.method(file, 'writeFile', (...values) => { assert.equal(audited.has(path), true, '첫 쓰기 전에 해당 파일 ACL을 확인해야 합니다'); written.push(path); return write(...values); });
+      return file;
+    });
+    syncBuiltinESMExports();
+    const event = {session_id:'합성 Windows',hook_event_name:'SessionStart',source:'startup'};
+    assert.equal((await handle(event,options))?.hookSpecificOutput?.hookEventName, 'SessionStart');
+    assert.ok(written.length >= 2); assert.ok([...audited].some(path => path.endsWith('.tmp')));
+    assert.ok([...audited].some(path => path.endsWith('receipts.jsonl')));
+    const dir = join(options.dataRoot,'state',digest(event.session_id));
+    await chmod(join(dir,'session.json'),0o666);
+    assert.equal((await handle(event,options))?.hookSpecificOutput?.hookEventName,'SessionStart','합성 POSIX mode 대신 성공한 ACL 판정을 사용해야 합니다');
+    await writeFile(join(dir,'uncertainty'),'');
+    for (const target of ['session.json','uncertainty','.tmp','receipts.jsonl','새 영수증','C:/private']) {
+      if(target==='새 영수증') await rm(join(dir,'receipts.jsonl'));
+      denied=target==='새 영수증'?'receipts.jsonl':target;
+      const count=written.length;
+      assert.equal(await handle(event,options),null,`${target} ACL 실패에서 출력하면 안 됩니다`);
+      assert.equal(written.slice(count).some(path=>path.includes(denied)),false,'거부된 파일을 쓰면 안 됩니다');
+      if(!target.includes('영수증') && target!=='receipts.jsonl') assert.equal(written.length,count);
+    }
+  } finally {
+    t.mock.restoreAll(); syncBuiltinESMExports(); Object.defineProperty(process,'platform',platform); process.chdir(cwd);
+    if(systemRoot === undefined) delete process.env.SystemRoot; else process.env.SystemRoot = systemRoot;
+    await rm(work,{recursive:true,force:true});
+  }
+});
 
 const policyPath = resolve('plugins/yessr/policy.json');
 const handlerPath = resolve('plugins/yessr/hooks/response.mjs');
@@ -253,6 +365,7 @@ test('원시 응답의 JSON 스칼라와 요약 첫 줄과 문자열 완전 일�
 async function fixture(t) {
   const dataRoot = await mkdtemp(join(tmpdir(), 'yessr-test-'));
   t.after(() => rm(dataRoot, { recursive: true, force: true }));
+  if (windows) await fixtureAcl(dataRoot);
   const options = { dataRoot, policyPath };
   const event = (hook_event_name, extra = {}) => ({ hook_event_name, session_id: '세션/../하나', turn_id: '턴-A', ...extra });
   const run = (name, extra) => handle(event(name, extra), options);
@@ -262,13 +375,93 @@ async function fixture(t) {
   return { dataRoot, options, event, run, dir, state };
 }
 const badStop = { stop_hook_active: false, last_assistant_message: '잘못된 결과' };
+async function fixtureAcl(path, publicAccess = false) {
+  const script = String.raw`
+$ErrorActionPreference='Stop'
+[Console]::InputEncoding=New-Object System.Text.UTF8Encoding($false)
+$request=[Console]::In.ReadToEnd() | ConvertFrom-Json
+$directory=(Get-Item -LiteralPath $request.path -Force).PSIsContainer
+$acl=if($directory){New-Object Security.AccessControl.DirectorySecurity}else{New-Object Security.AccessControl.FileSecurity}
+$user=[Security.Principal.WindowsIdentity]::GetCurrent().User
+$acl.SetOwner($user)
+$acl.SetAccessRuleProtection($true,$false)
+$inheritance=if($directory){[Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit'}else{[Security.AccessControl.InheritanceFlags]::None}
+foreach($sid in @($user.Value,'S-1-5-18','S-1-5-32-544')) {
+  $identity=New-Object Security.Principal.SecurityIdentifier($sid)
+  $rule=New-Object Security.AccessControl.FileSystemAccessRule($identity,'FullControl',$inheritance,'None','Allow')
+  $acl.AddAccessRule($rule)
+}
+if($request.publicAccess) {
+  $identity=New-Object Security.Principal.SecurityIdentifier('S-1-1-0')
+  $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($identity,'ReadAndExecute',$inheritance,'None','Allow')))
+}
+Set-Acl -LiteralPath $request.path -AclObject $acl
+`;
+  const child = spawn(join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe'),
+    ['-NoLogo','-NoProfile','-NonInteractive','-Command',script], {shell:false,stdio:['pipe','pipe','pipe'],timeout:10000});
+  let stderr=''; child.stderr.setEncoding('utf8').on('data',value=>{stderr+=value;}); child.stdout.resume();
+  const completed = new Promise((resolve,reject)=>{child.on('error',reject);child.on('close',resolve);});
+  child.stdin.end(JSON.stringify({path,publicAccess}));
+  assert.equal(await completed,0,`임시 ACL 설정 실패: ${stderr}`);
+}
+for (const target of ['root','state','session.json','uncertainty','receipts.jsonl']) {
+  test(`Windows 실기 ACL: 공개 ${target}은 무출력으로 거부한다`, {skip: windows ? false : 'native Windows NTFS 실행 환경 필요'}, async t => {
+    const f=await fixture(t), path=target==='root'?f.dataRoot:target==='state'?join(f.dataRoot,'state'):join(f.dir,target);
+    if(target==='uncertainty') await writeFile(path,'외부 원문');
+    const before=target.endsWith('.json') || target==='uncertainty' || target.endsWith('.jsonl') ? await readFile(path,'utf8'):null;
+    await fixtureAcl(path,true);
+    assert.equal(await processRun(f,f.event('SessionStart',{source:'startup'})),null);
+    if(before!==null) assert.equal(await readFile(path,'utf8'),before);
+  });
+}
+for (const target of ['temp','receipt']) test(`Windows 실기 ACL: 새 ${target}의 공개 ACL은 첫 쓰기 전에 거부한다`, {skip:windows?false:'native Windows NTFS 실행 환경 필요'}, async t=>{
+  const f=await fixture(t); await f.run('UserPromptSubmit',{prompt:'JSON만 출력해줘.'});
+  if(target==='receipt') await rm(join(f.dir,'receipts.jsonl'));
+  const originalOpen=fs.open; let guarded, writes=0;
+  t.mock.method(fs,'open',async(path,...args)=>{
+    const file=await originalOpen(path,...args);
+    if((target==='temp'&&path.endsWith('.tmp')) || (target==='receipt'&&path.endsWith('receipts.jsonl'))) {
+      guarded=file; await fixtureAcl(path,true);
+      const write=file.writeFile.bind(file); t.mock.method(file,'writeFile',(...values)=>{writes++;return write(...values);});
+    }
+    return file;
+  });
+  syncBuiltinESMExports();
+  try {assert.equal(await f.run('Stop',badStop),null);}
+  finally {t.mock.restoreAll();syncBuiltinESMExports();}
+  assert.ok(guarded);assert.equal(writes,0);assert.equal(guarded.fd,-1);
+  assert.equal((await readdir(f.dir)).some(name=>name.endsWith('.tmp')),false);
+  assert.equal((await f.state()).turns[digest('턴-A')].correctionConsumed,target==='receipt');
+});
+test('파일 보호: 상태 폴더의 디렉터리 링크 또는 junction을 거부한다',async t=>{
+  const f=await fixture(t), state=join(f.dataRoot,'state'), outside=join(f.dataRoot,'외부 상태');
+  await fs.rename(state,outside); await symlink(outside,state,windows?'junction':'dir');
+  const path=join(outside,digest('세션/../하나'),'session.json'), original=await readFile(path,'utf8');
+  assert.equal(await processRun(f,f.event('SessionStart',{source:'startup'})),null);
+  assert.equal(await readFile(path,'utf8'),original);
+});
+test('영수증의 늦은 쓰기 실패 뒤 저장된 교정 소비 상태를 되돌리지 않는다',async t=>{
+  const f=await fixture(t); await f.run('UserPromptSubmit',{prompt:'JSON만 출력해줘.'});
+  const originalOpen=fs.open; let attempts=0, opened;
+  t.mock.method(fs,'open',async(path,...args)=>{
+    const file=await originalOpen(path,...args);
+    if(path===join(f.dir,'receipts.jsonl')) {opened=file;t.mock.method(file,'writeFile',async()=>{attempts++;throw Object.assign(new Error('합성 영수증 쓰기 실패'),{code:'EIO'});});}
+    return file;
+  });
+  syncBuiltinESMExports();
+  try {assert.equal(await f.run('Stop',badStop),null);}
+  finally {t.mock.restoreAll();syncBuiltinESMExports();}
+  assert.equal(attempts,1); assert.equal(opened.fd,-1);
+  assert.equal((await f.state()).turns[digest('턴-A')].correctionConsumed,true);
+  assert.equal(await f.run('Stop',badStop),null);
+});
 for (const target of ['session.json', 'uncertainty', 'receipts.jsonl']) {
   for (const kind of ['symlink', 'link']) test(`파일 보호: ${target}의 ${kind}를 거부하고 외부 원문을 보존한다`, async t => {
     const f = await fixture(t);
     const path = join(f.dir, target), outside = join(f.dataRoot, '외부');
     const original = target === 'session.json' ? JSON.stringify(await f.state()) : '외부 원문';
     await writeFile(outside, original, { mode: 0o600 });
-    await rm(path, { force: true }); await fs[kind](outside, path);
+    await rm(path, { force: true }); await fs[kind](outside, path, ...(kind === 'symlink' ? ['file'] : []));
     assert.equal(await processRun(f, f.event('SessionStart', { source: 'startup' })), null, '보안 실패를 복구로 취급하면 안 됩니다');
     assert.equal(await readFile(outside, 'utf8'), original, '외부 원문을 변경하면 안 됩니다');
   });
@@ -313,7 +506,7 @@ test('파일 보호: 없는 영수증에 open 직전 삽입한 링크를 거부�
   finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
   assert.equal(swaps, 1); assert.equal(await readFile(outside, 'utf8'), '외부 원문');
 });
-test('권한: 공개 루트와 하위 폴더 및 상태 파일을 거부한다', async t => {
+test('권한: 공개 루트와 하위 폴더 및 상태 파일을 거부한다', {skip: windows ? 'POSIX mode 전용; Windows는 실제 공개 ACL 사례로 검증' : false}, async t => {
   for (const target of ['root', 'state', 'session.json']) {
     const f = await fixture(t);
     const path = target === 'root' ? f.dataRoot : target === 'state' ? join(f.dataRoot, 'state') : join(f.dir, target);
@@ -441,8 +634,12 @@ test('같은 턴의 false 재전달과 true 후속은 최대 한 번만 차단�
   assert.equal(receipts.filter(r => r.blockPrepared).length, 1);
   assert.equal(JSON.stringify(receipts).includes('잘못된 결과'), false);
   assert.equal(JSON.stringify(state).includes('JSON만 출력해줘'), false);
-  assert.equal((await stat(f.dir)).mode & 0o777, 0o700);
-  assert.equal((await stat(join(f.dir, 'session.json'))).mode & 0o777, 0o600);
+  if (windows) {
+    await assertWindowsPrivatePath(f.dir); await assertWindowsPrivatePath(join(f.dir,'session.json'));
+  } else {
+    assert.equal((await stat(f.dir)).mode & 0o777, 0o700);
+    assert.equal((await stat(join(f.dir, 'session.json'))).mode & 0o777, 0o600);
+  }
 });
 for (const flag of [true, undefined, null, 0, 'false']) test(`native 플래그 ${String(flag)}는 교정을 요청하지 않는다`, async t => {
   const f = await fixture(t); await f.run('UserPromptSubmit', { prompt: 'JSON만 출력해줘.' });
@@ -544,7 +741,7 @@ test('소비 상태 저장 실패와 영수증 저장 실패에서는 stdout을 
     assert.equal(await f.run('Stop', badStop), null);
   }
 });
-test('디렉터리 쓰기 권한 실패가 나면 block하지 않는다', async t => {
+test('디렉터리 쓰기 권한 실패가 나면 block하지 않는다', {skip: windows ? 'POSIX chmod 전용; Windows는 실제 ACL 거부와 쓰기 실패 사례로 검증' : false}, async t => {
   const f = await fixture(t); await f.run('UserPromptSubmit', { prompt: 'JSON만 출력해줘.' });
   await chmod(join(f.dir, 'session.json'), 0o400);
   await chmod(f.dir, 0o500);
@@ -665,7 +862,7 @@ test('심볼릭 링크로 실행해도 정책을 주입하고 실제 후크를 �
 test('심볼릭 링크 보존 옵션에서도 패키지 링크의 Claude 후크를 실행한다', async t => {
   const f = await fixture(t);
   const link = join(f.dataRoot, '패키지 링크');
-  await symlink(resolve('plugins/yessr'), link);
+  await symlink(resolve('plugins/yessr'), link, windows ? 'junction' : 'dir');
   const linked = { ...f, handlerPath: join(link, 'hooks/response.mjs') };
   const environment = { NODE_OPTIONS: '--preserve-symlinks-main', PLUGIN_DATA: undefined, CLAUDE_PLUGIN_DATA: f.dataRoot };
   const run = (event, extra) => processRun(linked, f.event(event, { turn_id: undefined, prompt_id: '보존된 링크', ...extra }), undefined, environment);
@@ -783,7 +980,7 @@ test('첫 true 또는 잘못된 flag 뒤 false가 와도 닫힌 턴을 다시 �
     assert.equal(await f.run('Stop', { ...badStop, turn_id }), null);
   }
 });
-test('호스트의 기존 0755 데이터 루트를 보존하고 하위 상태만 사용자 전용으로 만든다', async t => {
+test('호스트의 기존 0755 데이터 루트를 보존하고 하위 상태만 사용자 전용으로 만든다', {skip: windows ? 'POSIX mode 전용; Windows fixture는 비공개 ACL로 생성' : false}, async t => {
   const dataRoot = await mkdtemp(join(tmpdir(), 'yessr-host-root-'));
   t.after(() => rm(dataRoot, { recursive: true, force: true }));
   await chmod(dataRoot, 0o755);
