@@ -133,7 +133,7 @@ test('두 호스트의 manifest는 같은 패키지와 단일 후크 정의를 �
   await assert.rejects(readFile(join(root, 'plugin.json')), { code: 'ENOENT' }, 'portable manifest가 함께 있으면 안 됩니다');
   const manifest = JSON.parse(await readFile(join(root, '.codex-plugin/plugin.json'), 'utf8'));
   assert.equal(manifest.name, 'yessr');
-  assert.equal(manifest.version, '0.1.0');
+  assert.equal(manifest.version, '0.1.1');
   assert.equal(manifest.hooks, './hooks/hooks.json', '후크 경로는 패키지 내부 정의를 가리켜야 합니다');
   const hooks = JSON.parse(await readFile(resolve(root, manifest.hooks), 'utf8')).hooks;
   assert.deepEqual(Object.keys(hooks).sort(), ['SessionStart', 'Stop', 'UserPromptSubmit']);

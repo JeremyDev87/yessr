@@ -247,7 +247,7 @@ export async function handle(input, options = {}) {
       state.version = 2;
     }
     const turnKey = event === 'SessionStart' ? null : digest(turnId);
-    const receipt = { plugin: 'yessr', version: '0.1.0', event, sessionHash: digest(input.session_id), turnHash: turnKey, mode: 'unknown', code: 'skip', blockPrepared: false };
+    const receipt = { plugin: 'yessr', version: '0.1.1', event, sessionHash: digest(input.session_id), turnHash: turnKey, mode: 'unknown', code: 'skip', blockPrepared: false };
     if (event === 'SessionStart') receipt.source = input.source;
     if (event === 'Stop') receipt.stopHookActive = typeof input.stop_hook_active === 'boolean' ? input.stop_hook_active : null;
     let result = null;
