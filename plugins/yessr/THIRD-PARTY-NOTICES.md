@@ -34,4 +34,6 @@ Yessr의 요청 요약 계약을 유지하도록 결론은 요청 요약 다음�
 
 ## 포함하지 않은 자료와 검증 범위
 
+한국어 정책은 [fluent-korean의 출력 스타일](https://github.com/snflkd/fluent-korean/blob/main/plugins/fluent-korean/output-styles/fluent-korean.md#L21-L32)도 참고했습니다(snflkd, [MIT](https://github.com/snflkd/fluent-korean/blob/main/LICENSE)). 의미 전달에 필요한 부분만 다듬는 자체 지침을 작성했고, 이미 명확한 짧은 상태 보고·제목·목록은 그대로 둡니다. 원본 지침·예문·플러그인은 포함하지 않습니다.
+
 plain-english의 재시도 구현·judge·transcript reader·설치 훅, hanlint의 코드·사전·평가 자료, ASD 표준 문안·로고는 포함하지 않습니다. 이 재사용으로 필수 runtime dependency를 추가하지 않습니다. Yessr는 정식 ASD-STE100 준수·인증이나 한국어 의미 정확성의 자동 보장을 주장하지 않습니다.

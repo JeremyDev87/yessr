@@ -676,10 +676,19 @@ for (const source of ['startup', 'clear', 'resume', 'compact', 'fork']) test(`�
   const output = await f.run('SessionStart', { source });
   assert.equal(output.hookSpecificOutput.hookEventName, 'SessionStart');
   assert.ok(output.hookSpecificOutput.additionalContext.includes(policy.recapPrefix));
-  assert.ok(output.hookSpecificOutput.additionalContext.includes(policy.preservationInstructions[0]));
+  for (const rule of [...policy.clarityInstructions, ...policy.preservationInstructions, ...policy.exactOutputInstructions]) {
+    assert.ok(output.hookSpecificOutput.additionalContext.split('\n').includes(rule), rule);
+  }
   await f.run('UserPromptSubmit', { turn_id: 'B', prompt: '캐시를 설명해줘.' });
   assert.equal((await f.state()).turns[digest('B')].mode, ['startup', 'clear'].includes(source) ? 'prose' : 'unknown');
   assert.equal((await f.state()).turns[digest('턴-A')].correctionConsumed, true);
+});
+test('Stop은 한국어 제목과 짧은 목록 항목에 윤문을 강제하지 않는다', async t => {
+  const f = await fixture(t);
+  await f.run('SessionStart', { source: 'startup' });
+  await f.run('UserPromptSubmit', { prompt: '배포 상태를 설명해줘.' });
+  const last_assistant_message = `${policy.recapPrefix} 배포 상태 설명\n\n## 배포 상태\n- 테스트 통과\n- 배포 미확인`;
+  assert.equal(await f.run('Stop', { ...badStop, last_assistant_message }), null);
 });
 test('인용된 형식의 unknown 이력에서는 현재 설명도 억제하고 reset으로만 해제한다', async t => {
   const f = await fixture(t);
